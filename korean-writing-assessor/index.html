@@ -254,6 +254,47 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- 학생용 공유 링크 생성 카드 -->
+                <div class="card" style="margin-top: 24px;">
+                    <div class="card-header justify-between">
+                        <div class="flex-align-center">
+                            <i data-lucide="share-2" class="card-icon indigo"></i>
+                            <h3>학생용 공유 링크 생성</h3>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <p class="description">
+                            현재 입력된 <strong>글쓰기 과제(지문, 주제)</strong>와 <strong>채점 기준(루브릭)</strong>이 포함된 링크를 만들어 학생들에게 전달할 수 있습니다. 
+                            이 링크로 접속한 학생들은 번거로운 설정 없이 즉시 글쓰기와 채점을 진행할 수 있습니다.
+                        </p>
+                        
+                        <div class="form-group" style="margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px;">
+                            <label class="checkbox-container" style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.9rem; user-select: none;">
+                                <input type="checkbox" id="share-include-api-key" checked style="width: 16px; height: 16px; accent-color: var(--primary-color, #6366f1);">
+                                <span><strong>Gemini API Key 포함하기</strong> (학생들이 API Key를 직접 입력하지 않고 바로 이용할 수 있게 합니다)</span>
+                            </label>
+                            <p class="warning-text" id="share-api-warning" style="font-size: 0.8rem; color: #f87171; display: flex; align-items: center; gap: 4px; margin: 0;">
+                                <i data-lucide="alert-triangle" style="width: 14px; height: 14px;"></i> API Key를 포함하면 다른 사람에게 키가 노출될 수 있으므로, 신뢰할 수 있는 학생들에게만 공유해 주세요.
+                            </p>
+                        </div>
+                        
+                        <div class="form-group">
+                            <div class="input-with-action">
+                                <input type="text" id="share-link-input" readonly placeholder="공유 링크 생성을 클릭해 주세요." style="background-color: var(--bg-hover, #f3f4f6); cursor: default;">
+                                <button id="btn-copy-share-link" class="btn btn-secondary" style="white-space: nowrap; gap: 4px; display: none;">
+                                    <i data-lucide="copy"></i> 복사
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="action-row" style="margin-top: 12px;">
+                            <button id="btn-generate-share-link" class="btn btn-primary">
+                                <i data-lucide="link"></i> 공유 링크 생성
+                            </button>
+                        </div>
+                    </div>
+                </div>
             </section>
 
             <!-- TAB 3: 학생 모드 -->

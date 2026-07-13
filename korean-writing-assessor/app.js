@@ -1189,10 +1189,155 @@ function setupTeacherPasswordHandlers() {
     });
 }
 
+// --- UTF-8 Safe Base64 Encoding & Decoding Helpers ---
+function utf8ToBase64(str) {
+    return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (match, p1) => {
+        return String.fromCharCode(parseInt(p1, 16));
+    }));
+}
+
+function base64ToUtf8(str) {
+    return decodeURIComponent(atob(str).split('').map((c) => {
+        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+    }).join(''));
+}
+
+// --- URL Share Link Handler ---
+function checkAndLoadSharedData() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const encodedData = urlParams.get('data');
+    
+    if (encodedData) {
+        try {
+            const decodedJson = base64ToUtf8(encodedData);
+            const sharedState = JSON.parse(decodedJson);
+            
+            if (sharedState.assignment && sharedState.rubrics) {
+                // Update local storage and state
+                if (sharedState.includeApiKey && sharedState.apiKey) {
+                    state.apiKey = sharedState.apiKey;
+                    localStorage.setItem(STORAGE_KEYS.API_KEY, state.apiKey);
+                }
+                
+                state.assignment = sharedState.assignment;
+                state.rubrics = sharedState.rubrics;
+                
+                localStorage.setItem(STORAGE_KEYS.ASSIGNMENT, JSON.stringify(state.assignment));
+                localStorage.setItem(STORAGE_KEYS.RUBRICS, JSON.stringify(state.rubrics));
+                
+                // Clean URL data parameter so the URL stays clean, preserving others (e.g. mode)
+                const cleanUrlParams = new URLSearchParams(window.location.search);
+                cleanUrlParams.delete('data');
+                const newSearch = cleanUrlParams.toString();
+                const newUrl = window.location.origin + window.location.pathname + (newSearch ? '?' + newSearch : '');
+                window.history.replaceState({ path: newUrl }, '', newUrl);
+                
+                // Show success toast
+                setTimeout(() => {
+                    showToast('공유받은 과제와 평가 기준이 정상적으로 적용되었습니다!', 'success');
+                }, 500);
+                
+                // Sync to DOM elements if they exist
+                const titleInput = document.getElementById('assignment-title');
+                const passageInput = document.getElementById('assignment-passage');
+                const topicInput = document.getElementById('assignment-topic');
+                const minCharInput = document.getElementById('min-char-count');
+                const maxCharInput = document.getElementById('max-char-count');
+                const keyInput = document.getElementById('api-key-input');
+                
+                if (titleInput) titleInput.value = state.assignment.title;
+                if (passageInput) passageInput.value = state.assignment.passage;
+                if (topicInput) topicInput.value = state.assignment.topic;
+                if (minCharInput) minCharInput.value = state.assignment.minChar;
+                if (maxCharInput) maxCharInput.value = state.assignment.maxChar;
+                if (keyInput && state.apiKey) keyInput.value = state.apiKey;
+            }
+        } catch (e) {
+            console.error('Failed to parse shared link data:', e);
+            showToast('공유 링크 데이터를 불러오는 데 실패했습니다.', 'error');
+        }
+    }
+}
+
+// --- Share Link Handler for Teacher ---
+function setupShareLinkHandlers() {
+    const btnGen = document.getElementById('btn-generate-share-link');
+    const btnCopy = document.getElementById('btn-copy-share-link');
+    const linkInput = document.getElementById('share-link-input');
+    const checkApiKey = document.getElementById('share-include-api-key');
+    const apiWarning = document.getElementById('share-api-warning');
+    
+    if (!btnGen || !btnCopy || !linkInput) return;
+    
+    // Toggle warning message based on checkbox
+    checkApiKey.addEventListener('change', () => {
+        if (checkApiKey.checked) {
+            apiWarning.style.display = 'flex';
+        } else {
+            apiWarning.style.display = 'none';
+        }
+    });
+    
+    btnGen.addEventListener('click', () => {
+        if (!state.assignment.title && !state.assignment.topic) {
+            showToast('공유할 과제 제목이나 주제가 등록되어 있지 않습니다.', 'error');
+            return;
+        }
+        
+        // Prepare shared data
+        const sharedState = {
+            assignment: state.assignment,
+            rubrics: state.rubrics,
+            includeApiKey: checkApiKey.checked
+        };
+        
+        if (checkApiKey.checked) {
+            if (!state.apiKey) {
+                showToast('포함할 API Key가 등록되어 있지 않습니다. 설정 & API 탭에서 등록해 주세요.', 'error');
+                return;
+            }
+            sharedState.apiKey = state.apiKey;
+        }
+        
+        try {
+            // Serialize and encode to base64
+            const jsonStr = JSON.stringify(sharedState);
+            const encodedData = utf8ToBase64(jsonStr);
+            
+            // Construct student-mode URL
+            const baseUrl = window.location.origin + window.location.pathname;
+            const shareUrl = `${baseUrl}?data=${encodedData}`;
+            
+            linkInput.value = shareUrl;
+            btnCopy.style.display = 'flex';
+            
+            showToast('공유 링크가 생성되었습니다. 아래의 복사 버튼을 눌러 공유해 주세요!', 'success');
+        } catch (err) {
+            console.error('Failed to generate share link:', err);
+            showToast('공유 링크 생성에 실패했습니다.', 'error');
+        }
+    });
+    
+    btnCopy.addEventListener('click', () => {
+        if (!linkInput.value) return;
+        
+        navigator.clipboard.writeText(linkInput.value)
+            .then(() => {
+                showToast('학생용 공유 링크가 클립보드에 복사되었습니다!', 'success');
+            })
+            .catch(() => {
+                showToast('클립보드 복사에 실패했습니다. 주소를 직접 선택해서 복사해 주세요.', 'error');
+            });
+    });
+}
+
 // --- App Initialization ---
 document.addEventListener('DOMContentLoaded', () => {
     // Load local storage states
     loadStateFromStorage();
+    
+    // Check url data parameters and apply if present
+    checkAndLoadSharedData();
     
     // Initialize icons
     lucide.createIcons();
@@ -1206,4 +1351,5 @@ document.addEventListener('DOMContentLoaded', () => {
     setupTeacherViewHandlers();
     setupStudentViewHandlers();
     setupResultsViewHandlers();
+    setupShareLinkHandlers(); // 공유 링크 생성 핸들러 연동
 });
