@@ -1306,7 +1306,7 @@ function setupShareLinkHandlers() {
             
             // Construct student-mode URL
             const baseUrl = window.location.origin + window.location.pathname;
-            const shareUrl = `${baseUrl}?data=${encodedData}`;
+            const shareUrl = `${baseUrl}?data=${encodeURIComponent(encodedData)}`;
             
             linkInput.value = shareUrl;
             btnCopy.style.display = 'flex';
