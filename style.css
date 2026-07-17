@@ -1054,3 +1054,49 @@ textarea {
     background-color: var(--color-indigo-hover);
 }
 
+
+/* ===== 성취수준 배지 (2022 개정 교육과정 성취평가제 A~E) ===== */
+.achievement-badge {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    border-radius: var(--radius-md, 8px);
+    font-weight: 700;
+    font-size: 1.05rem;
+    letter-spacing: 0.02em;
+    border: 1px solid transparent;
+}
+
+/* 값이 채워지면(:not(:empty)) 표시 */
+.achievement-badge:not(:empty) {
+    display: flex;
+}
+
+.achievement-badge.level-A {
+    background-color: #ecfdf5;
+    color: #047857;
+    border-color: #a7f3d0;
+}
+.achievement-badge.level-B {
+    background-color: #eff6ff;
+    color: #1d4ed8;
+    border-color: #bfdbfe;
+}
+.achievement-badge.level-C {
+    background-color: #eef2ff;
+    color: #4338ca;
+    border-color: #c7d2fe;
+}
+.achievement-badge.level-D {
+    background-color: #fff7ed;
+    color: #c2410c;
+    border-color: #fed7aa;
+}
+.achievement-badge.level-E {
+    background-color: #fef2f2;
+    color: #b91c1c;
+    border-color: #fecaca;
+}

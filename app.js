@@ -1,7 +1,6 @@
-// Application State
 let state = {
     apiKey: '',
-    selectedModel: 'gemini-1.5-flash', // Automatically updated based on API key permissions
+    selectedModel: 'gemini-2.5-flash', // Automatically updated based on API key permissions
     teacherPassword: '1234', // Default password for teacher mode lock
     assignment: {
         title: '',
@@ -12,7 +11,16 @@ let state = {
     },
     rubrics: [], // Array of { id, title, description, maxScore }
     results: [],  // Array of evaluation results
-    currentResultId: null // ID of the currently viewed result
+    currentResultId: null, // ID of the currently viewed result
+    sheetUrl: '', // Google Spreadsheet Web App URL
+    studentInfo: {
+        grade: '',
+        class: '',
+        number: '',
+        name: ''
+    },
+    submissions: [], // Accumulated student submissions loaded from Google Sheets
+    selectedSubmissionId: null
 };
 
 // --- LocalStorage Logic ---
@@ -22,13 +30,16 @@ const STORAGE_KEYS = {
     TEACHER_PASSWORD: 'kwa_teacher_password',
     ASSIGNMENT: 'kwa_assignment',
     RUBRICS: 'kwa_rubrics',
-    RESULTS: 'kwa_results'
+    RESULTS: 'kwa_results',
+    SHEET_URL: 'kwa_sheet_url',
+    STUDENT_INFO: 'kwa_student_info'
 };
 
 function loadStateFromStorage() {
     state.apiKey = localStorage.getItem(STORAGE_KEYS.API_KEY) || '';
-    state.selectedModel = localStorage.getItem(STORAGE_KEYS.SELECTED_MODEL) || 'gemini-1.5-flash';
+    state.selectedModel = localStorage.getItem(STORAGE_KEYS.SELECTED_MODEL) || 'gemini-2.5-flash';
     state.teacherPassword = localStorage.getItem(STORAGE_KEYS.TEACHER_PASSWORD) || '1234';
+    state.sheetUrl = localStorage.getItem(STORAGE_KEYS.SHEET_URL) || '';
     
     const savedAssignment = localStorage.getItem(STORAGE_KEYS.ASSIGNMENT);
     if (savedAssignment) {
@@ -47,6 +58,11 @@ function loadStateFromStorage() {
             state.currentResultId = state.results[0].id;
         }
     }
+    
+    const savedStudentInfo = localStorage.getItem(STORAGE_KEYS.STUDENT_INFO);
+    if (savedStudentInfo) {
+        state.studentInfo = JSON.parse(savedStudentInfo);
+    }
 }
 
 function saveStateToStorage() {
@@ -56,6 +72,8 @@ function saveStateToStorage() {
     localStorage.setItem(STORAGE_KEYS.ASSIGNMENT, JSON.stringify(state.assignment));
     localStorage.setItem(STORAGE_KEYS.RUBRICS, JSON.stringify(state.rubrics));
     localStorage.setItem(STORAGE_KEYS.RESULTS, JSON.stringify(state.results));
+    localStorage.setItem(STORAGE_KEYS.SHEET_URL, state.sheetUrl);
+    localStorage.setItem(STORAGE_KEYS.STUDENT_INFO, JSON.stringify(state.studentInfo));
 }
 
 // --- Toast / Notification System ---
@@ -143,143 +161,152 @@ function parseCleanJson(text) {
 }
 
 // --- API Connector (Gemini REST API) ---
+// 2024년 이후 Gemini API는 v1beta 엔드포인트에서 최신 모델(2.x 계열)을 제공합니다.
+const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+
+// 지정한 모델로 generateContent 요청을 보내는 저수준 함수
+async function requestGemini(model, prompt, key) {
+    const apiKey = key || state.apiKey;
+    const url = `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`;
+    const requestBody = {
+        contents: [
+            { parts: [{ text: prompt }] }
+        ]
+    };
+    return fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody)
+    });
+}
+
+// 오류가 '모델을 사용할 수 없음'(지원 종료·미지원 모델 등) 유형인지 판별
+function isModelUnavailableError(status, message) {
+    if (status === 404) return true;
+    const m = (message || '').toLowerCase();
+    return m.includes('not found') || m.includes('not supported') ||
+           m.includes('deprecated') || m.includes('is not available') ||
+           m.includes('unsupported') || m.includes('call listmodels');
+}
+
 async function callGemini(prompt, useJson = true) {
     if (!state.apiKey) {
         throw new Error('API Key가 등록되지 않았습니다. [설정 & API] 탭에서 등록해 주세요.');
     }
-    
-    const model = state.selectedModel || 'gemini-1.5-flash';
-    const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${state.apiKey}`;
-    
-    const requestBody = {
-        contents: [
-            {
-                parts: [
-                    { text: prompt }
-                ]
+
+    let model = state.selectedModel || 'gemini-2.5-flash';
+
+    // 1차 시도
+    let response = await requestGemini(model, prompt);
+
+    // 저장된 모델을 쓸 수 없는 경우(예: 지원 종료된 gemini-1.5-flash),
+    // 사용 가능한 모델을 자동으로 다시 찾아 1회 재시도합니다.
+    // (학생이 공유 링크로 접속해 API 키 검증을 거치지 않은 경우에도 채점이 되도록 하는 안전장치)
+    if (!response.ok) {
+        let firstErrMsg = '';
+        try { firstErrMsg = (await response.clone().json()).error?.message || ''; } catch (e) {}
+        if (isModelUnavailableError(response.status, firstErrMsg)) {
+            try {
+                const working = await discoverWorkingModel(state.apiKey);
+                if (working) {
+                    model = working;
+                    state.selectedModel = working;
+                    saveStateToStorage();
+                    response = await requestGemini(model, prompt);
+                }
+            } catch (e) {
+                console.warn('작동 모델 자동 탐색 실패:', e.message);
             }
-        ]
-    };
-    
-    // responseMimeType 필드는 일부 구형/특정 모델에서 에러를 유발하므로 제거합니다.
-    // 대신 프롬프트에 JSON 출력을 강력히 명시하고, 응답에서 파싱합니다.
-    
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(requestBody)
-        });
-        
-        if (!response.ok) {
-            const errData = await response.json();
-            throw new Error(errData.error?.message || 'Gemini API 호출에 실패했습니다.');
         }
-        
-        const data = await response.json();
-        const textResult = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        
-        if (!textResult) {
-            throw new Error('API가 빈 결과를 반환했습니다.');
-        }
-        
-        if (useJson) {
-            return parseCleanJson(textResult);
-        }
-        return textResult;
-        
-    } catch (error) {
-        console.error('Gemini API Error:', error);
-        throw error;
     }
+
+    if (!response.ok) {
+        let errData = {};
+        try { errData = await response.json(); } catch (e) {}
+        throw new Error(errData.error?.message || 'Gemini API 호출에 실패했습니다.');
+    }
+
+    const data = await response.json();
+    const textResult = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!textResult) {
+        throw new Error('API가 빈 결과를 반환했습니다.');
+    }
+
+    if (useJson) {
+        return parseCleanJson(textResult);
+    }
+    return textResult;
+}
+
+// --- 사용 가능한 Gemini 모델 자동 탐색 ---
+// 계정에서 접근 가능한 모델 목록을 받아 최신 안정 모델부터 실제 호출 테스트를 수행하고,
+// 정상 응답하는 첫 모델 이름을 반환합니다.
+async function discoverWorkingModel(key) {
+    const listUrl = `${GEMINI_API_BASE}/models?key=${key || state.apiKey}`;
+    const response = await fetch(listUrl, { method: 'GET' });
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error?.message || `API 키 오류 (코드: ${response.status})`);
+    }
+
+    const data = await response.json();
+    if (!data.models || data.models.length === 0) {
+        throw new Error('사용 가능한 AI 모델이 계정에 존재하지 않습니다.');
+    }
+
+    // generateContent를 지원하는 gemini 모델만 추출
+    const geminiModels = data.models
+        .filter(m => !m.supportedGenerationMethods ||
+                     m.supportedGenerationMethods.includes('generateContent'))
+        .map(m => m.name.replace('models/', ''))
+        .filter(name => name.toLowerCase().includes('gemini'));
+
+    if (geminiModels.length === 0) {
+        throw new Error('이 API Key로 액세스할 수 있는 Gemini 모델이 없습니다.');
+    }
+
+    // 최신 안정 모델을 우선 사용하도록 정렬 (2.5-flash > 2.0-flash > flash-latest > 기타).
+    // 지원 종료 가능성이 있는 1.5 계열은 가장 뒤로 미룹니다.
+    const rank = (name) => {
+        const n = name.toLowerCase();
+        if (n.includes('preview') || n.includes('exp')) return 8; // 실험/프리뷰는 뒤로
+        if (n.includes('2.5-flash') && !n.includes('lite')) return 0;
+        if (n.includes('2.0-flash') && !n.includes('lite')) return 1;
+        if (n.includes('flash-latest')) return 2;
+        if (n.includes('2.5-flash')) return 3;
+        if (n.includes('2.0-flash')) return 4;
+        if (n.includes('flash') && !n.includes('1.5')) return 5;
+        if (n.includes('1.5')) return 9; // 지원 종료 가능성 → 최후순위
+        return 7;
+    };
+    geminiModels.sort((a, b) => rank(a) - rank(b));
+    console.log('Testing Gemini models in order:', geminiModels);
+
+    let lastErrorMessage = '';
+    for (const model of geminiModels) {
+        try {
+            const testResponse = await requestGemini(model, 'Hello', key);
+            if (testResponse.ok) {
+                return model; // 활성 쿼터가 있는 작동 모델 발견!
+            }
+            const errData = await testResponse.json().catch(() => ({}));
+            lastErrorMessage = errData.error?.message || `코드 ${testResponse.status}`;
+            console.warn(`Model ${model} test failed:`, lastErrorMessage);
+        } catch (err) {
+            lastErrorMessage = err.message || '네트워크 오류';
+            console.warn(`Model ${model} test error:`, lastErrorMessage);
+        }
+    }
+    throw new Error(`사용 가능한 모든 AI 모델의 쿼터 한도가 초과되었거나 제한되어 있습니다. (최종 실패 사유: ${lastErrorMessage})`);
 }
 
 // --- API Validation ---
 async function validateApiKey(key) {
-    // 1. Get the list of all available models for this API key to see which Gemini models are accessible
-    const listUrl = `https://generativelanguage.googleapis.com/v1/models?key=${key}`;
-    try {
-        const response = await fetch(listUrl, { method: 'GET' });
-        if (!response.ok) {
-            const errData = await response.json();
-            throw new Error(errData.error?.message || `API 키 오류 (코드: ${response.status})`);
-        }
-        
-        const data = await response.json();
-        if (!data.models || data.models.length === 0) {
-            throw new Error('사용 가능한 AI 모델이 계정에 존재하지 않습니다.');
-        }
-        
-        // Extract names (e.g. "models/gemini-1.5-flash" -> "gemini-1.5-flash")
-        const allModels = data.models.map(m => m.name.replace('models/', ''));
-        // Filter only gemini models
-        const geminiModels = allModels.filter(name => name.toLowerCase().includes('gemini'));
-        
-        if (geminiModels.length === 0) {
-            throw new Error('이 API Key로 액세스할 수 있는 Gemini 모델이 없습니다.');
-        }
-        
-        // Sort models to try the best ones first (1.5-flash first, then others)
-        geminiModels.sort((a, b) => {
-            // Prefer 1.5-flash (but skip 8b which is low performance, though can be fallback)
-            const aIsFlash15 = a.includes('1.5-flash') && !a.includes('8b');
-            const bIsFlash15 = b.includes('1.5-flash') && !b.includes('8b');
-            if (aIsFlash15 && !bIsFlash15) return -1;
-            if (!aIsFlash15 && bIsFlash15) return 1;
-            
-            // Then prefer 2.0-flash or 2.5-flash
-            const aIsFlash2 = a.includes('2.0-flash') || a.includes('2.5-flash');
-            const bIsFlash2 = b.includes('2.0-flash') || b.includes('2.5-flash');
-            if (aIsFlash2 && !bIsFlash2) return -1;
-            if (!aIsFlash2 && bIsFlash2) return 1;
-            
-            return 0;
-        });
-
-        console.log('Testing Gemini models in order:', geminiModels);
-        
-        let matchedModel = '';
-        let lastErrorMessage = '';
-        
-        // 2. Test each model until we find one that successfully responds (has quota > 0)
-        for (const model of geminiModels) {
-            try {
-                const testUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${key}`;
-                const testResponse = await fetch(testUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{ parts: [{ text: 'Hello' }] }]
-                    })
-                });
-                
-                if (testResponse.ok) {
-                    matchedModel = model;
-                    break; // Found a working model with active quota!
-                } else {
-                    const errData = await testResponse.json();
-                    lastErrorMessage = errData.error?.message || `코드 ${testResponse.status}`;
-                    console.warn(`Model ${model} test failed:`, lastErrorMessage);
-                }
-            } catch (err) {
-                lastErrorMessage = err.message || '네트워크 오류';
-                console.warn(`Model ${model} test error:`, lastErrorMessage);
-            }
-        }
-        
-        if (!matchedModel) {
-            throw new Error(`사용가능한 모든 AI 모델의 쿼터 한도가 초과되었거나 제한되어 있습니다. (최종 실패 사유: ${lastErrorMessage})`);
-        }
-        
-        // Update state and save
-        state.selectedModel = matchedModel;
-        console.log('Successfully validated API Key. Selected active model:', matchedModel);
-        return true;
-    } catch (error) {
-        throw new Error(error.message || '네트워크 연결 실패');
-    }
+    const matchedModel = await discoverWorkingModel(key);
+    state.selectedModel = matchedModel;
+    console.log('Successfully validated API Key. Selected active model:', matchedModel);
+    return true;
 }
 
 // --- UI rendering & Interaction Logic ---
@@ -293,22 +320,22 @@ function setupTabs() {
         item.addEventListener('click', (e) => {
             const targetTab = item.getAttribute('data-tab');
             
-            // 2차 비밀번호 잠금 체크: 교사용 탭(config, teacher) 진입 시
-            if (targetTab === 'config' || targetTab === 'teacher') {
+            // 2단계 비밀번호 체크: 교사용(config, teacher, submissions) 탭 진입 시
+            if (targetTab === 'config' || targetTab === 'teacher' || targetTab === 'submissions') {
                 const isVerified = sessionStorage.getItem('kwa_is_teacher') === 'true';
                 
-                // 비밀번호가 설정되어 있고 아직 세션 인증이 안 된 경우
+                // 비밀번호가 설정되어 있고 인증이 안 된 경우에만 창 표시
                 if (state.teacherPassword && !isVerified) {
                     const passwordAttempt = prompt('교사 인증 비밀번호를 입력해 주세요:');
                     
                     if (passwordAttempt === state.teacherPassword) {
                         sessionStorage.setItem('kwa_is_teacher', 'true');
-                        showToast('교사 인증에 성공했습니다.', 'success');
+                        showToast('인증되었습니다.', 'success');
                     } else {
                         if (passwordAttempt !== null) {
                             showToast('비밀번호가 올바르지 않습니다.', 'error');
                         }
-                        // 이벤트 기본 동작 차단
+                        // 이벤트 기본 동작 중단
                         e.preventDefault();
                         e.stopPropagation();
                         return;
@@ -330,6 +357,8 @@ function setupTabs() {
                 renderStudentView();
             } else if (targetTab === 'results') {
                 renderResultsView();
+            } else if (targetTab === 'submissions') {
+                loadSubmissionsFromGoogleSheets();
             }
         });
     });
@@ -779,12 +808,58 @@ function setupStudentViewHandlers() {
     const textarea = document.getElementById('student-writing-textarea');
     const btnSubmit = document.getElementById('btn-submit-writing');
     
+    // 학생 학적 정보 입력 바인딩 및 자동 저장
+    const gradeSelect = document.getElementById('student-grade');
+    const classInput = document.getElementById('student-class');
+    const numberInput = document.getElementById('student-number');
+    const nameInput = document.getElementById('student-name');
+    
+    if (gradeSelect) {
+        gradeSelect.addEventListener('change', () => {
+            state.studentInfo.grade = gradeSelect.value;
+            saveStateToStorage();
+        });
+    }
+    if (classInput) {
+        classInput.addEventListener('input', () => {
+            state.studentInfo.class = classInput.value.trim();
+            saveStateToStorage();
+        });
+    }
+    if (numberInput) {
+        numberInput.addEventListener('input', () => {
+            state.studentInfo.number = numberInput.value.trim();
+            saveStateToStorage();
+        });
+    }
+    if (nameInput) {
+        nameInput.addEventListener('input', () => {
+            state.studentInfo.name = nameInput.value.trim();
+            saveStateToStorage();
+        });
+    }
+    
     textarea.addEventListener('input', () => {
         updateCharCounter(textarea.value);
     });
     
     btnSubmit.addEventListener('click', async () => {
         const studentText = textarea.value.trim();
+        
+        // 학적 정보 유효성 검사
+        const gradeVal = gradeSelect ? gradeSelect.value : '';
+        const classVal = classInput ? classInput.value.trim() : '';
+        const numberVal = numberInput ? numberInput.value.trim() : '';
+        const nameVal = nameInput ? nameInput.value.trim() : '';
+        
+        if (!gradeVal || !classVal || !numberVal || !nameVal) {
+            showToast('학년, 반, 번호, 이름을 모두 입력해 주세요.', 'error');
+            return;
+        }
+        
+        // 최종 정보 갱신 및 저장
+        state.studentInfo = { grade: gradeVal, class: classVal, number: numberVal, name: nameVal };
+        saveStateToStorage();
         
         if (!studentText) {
             showToast('글을 작성한 후 제출해 주세요.', 'error');
@@ -827,7 +902,7 @@ ${studentText}
 ---
 
 평가 진행 시 유의 사항:
-1. 각 영역 ID별로 부여할 획득 점수(정수)를 결정하십시오. 절대로 배점(maxScore)을 초과해서는 안 되며, 학생 글의 상태에 따라 엄격하고 정밀하게 채점하십시오.
+1. 각 영역 ID별로 부여할 획득 점수(정수)를 결정하십시오. 절대로 배점(maxScore)을 초과해서는 안 되며, 학생 글의 상태에 따라 엄격하고 정밀하게 채점하십시오. 이때 2022 개정 교육과정 성취평가제의 관점에서 해당 영역의 성취기준 도달 정도(A: 매우 우수 90%↑, B: 우수 80%↑, C: 보통 70%↑, D: 기초 60%↑, E: 노력 요함 60%미만)를 판단하고, 그 도달 수준이 점수에 자연스럽게 반영되도록 채점하십시오.
 2. 학생이 쓴 문장 중 맞춤법이 틀렸거나, 부적절한 표현, 비문, 혹은 논리적으로 모순되거나 보완해야 할 문장을 최대 3개 선별하여 'before'와 'after'의 교정 예시 및 구체적인 'comment'를 기술해 주십시오. (만약 교정할 문장이 없다면 빈 리스트로 출력하십시오.)
 3. 학생의 글에 대해 칭찬할 만한 '강점(strengths)'과 아쉽거나 논거가 부족해 보완해야 하는 '약점(weaknesses)'을 국어 선생님의 친근하고 전문적인 어투(~합니다, ~를 보완하면 좋겠습니다 등)로 한 문단씩 적어주십시오.
 4. 해당 논제와 지문에 맞추어 가장 훌륭하게 작성된 '모범 답안 예시(modelEssay)'를 한 편(약 400~600자) 작성해 주십시오.
@@ -865,6 +940,12 @@ JSON Schema 형식:
                 assignmentTitle: state.assignment.title || '국어 글쓰기 과제',
                 assignmentTopic: state.assignment.topic,
                 studentText: studentText,
+                studentInfo: {
+                    grade: state.studentInfo.grade,
+                    class: state.studentInfo.class,
+                    number: state.studentInfo.number,
+                    name: state.studentInfo.name
+                },
                 scores: aiFeedback.scores || {},
                 strengths: aiFeedback.strengths || '무난하게 작성되었습니다.',
                 weaknesses: aiFeedback.weaknesses || '특별한 약점이 없습니다.',
@@ -878,6 +959,11 @@ JSON Schema 형식:
             state.currentResultId = newResult.id;
             saveStateToStorage();
             
+            // 구글 스프레드시트 연동이 되어 있다면 데이터 전송 (백그라운드 실행)
+            if (state.sheetUrl) {
+                sendDataToGoogleSheets(newResult, studentText);
+            }
+            
             // Move to results tab
             document.querySelector('[data-tab="results"]').click();
             showToast('채점이 완료되었습니다. 피드백 리포트를 확인하세요!', 'success');
@@ -888,6 +974,24 @@ JSON Schema 형식:
             hideLoading();
         }
     });
+}
+
+// --- 성취수준 판정 (2022 개정 교육과정 성취평가제 5단계) ---
+// 성취율(획득점수 / 배점 × 100)을 기준으로 A~E 등급을 산출합니다.
+//  A: 90% 이상, B: 80% 이상, C: 70% 이상, D: 60% 이상, E: 60% 미만
+function getAchievementLevel(percentage) {
+    if (percentage >= 90) return { level: 'A', label: '매우 우수' };
+    if (percentage >= 80) return { level: 'B', label: '우수' };
+    if (percentage >= 70) return { level: 'C', label: '보통' };
+    if (percentage >= 60) return { level: 'D', label: '기초' };
+    return { level: 'E', label: '노력 요함' };
+}
+
+// 총 획득점수/총 배점으로 종합 성취수준을 계산 (배점 합이 0이면 E 처리)
+function computeOverallAchievement(totalAcquired, totalMax) {
+    const pct = totalMax > 0 ? (totalAcquired / totalMax) * 100 : 0;
+    const info = getAchievementLevel(pct);
+    return { ...info, percentage: Math.round(pct) };
 }
 
 // --- Results & Feedback View Logic ---
@@ -943,7 +1047,7 @@ function renderResultsView() {
         barItem.innerHTML = `
             <div class="score-bar-info">
                 <span class="score-bar-name">${rubric.title}</span>
-                <span class="score-bar-values">${score} / ${rubric.maxScore}점</span>
+                <span class="score-bar-values">${score} / ${rubric.maxScore}점 · <strong>${getAchievementLevel(percentage).level}</strong></span>
             </div>
             <div class="score-bar-track">
                 <div class="score-bar-fill" style="width: 0%"></div>
@@ -962,6 +1066,14 @@ function renderResultsView() {
     // Update Total Score Display
     document.getElementById('total-score-value').textContent = totalAcquired;
     document.getElementById('total-score-max').textContent = totalMax;
+
+    // Update Overall Achievement Level (성취수준 A~E)
+    const overall = computeOverallAchievement(totalAcquired, totalMax);
+    const badgeEl = document.getElementById('achievement-level-badge');
+    if (badgeEl) {
+        badgeEl.textContent = `성취수준 ${overall.level} · ${overall.label} (${overall.percentage}%)`;
+        badgeEl.className = `achievement-badge level-${overall.level}`;
+    }
     
     // Update Strengths and Weaknesses texts
     document.getElementById('feedback-strengths').textContent = currentRes.strengths;
@@ -1034,10 +1146,15 @@ function setupResultsViewHandlers() {
             rubricsText += `- ${rubric.title}: ${score}/${rubric.maxScore}점\n`;
         });
         
+        const ach = computeOverallAchievement(totalAcquired, totalMax);
+        const info = currentRes.studentInfo || {};
+        const studentMeta = info.name ? `${info.grade || '-'}학년 ${info.class || '-'}반 ${info.number || '-'}번 ${info.name}` : '학생 정보 없음';
+
         const copyText = `[국어 글쓰기 AI 평가 결과]\n` +
             `과제명: ${currentRes.assignmentTitle}\n` +
+            `대상: ${studentMeta}\n` +
             `일시: ${currentRes.timestamp}\n\n` +
-            `■ 종합 점수: ${totalAcquired}/${totalMax}점\n` +
+            `■ 종합 점수: ${totalAcquired}/${totalMax}점 (성취수준 ${ach.level} · ${ach.label})\n` +
             `${rubricsText}\n` +
             `■ 우수한 점(강점):\n${currentRes.strengths}\n\n` +
             `■ 보완할 점(약점):\n${currentRes.weaknesses}\n\n` +
@@ -1073,13 +1190,18 @@ function setupResultsViewHandlers() {
             revisionsText = '수정 권장 문장 없음\n';
         }
         
+        const ach = computeOverallAchievement(totalAcquired, totalMax);
+        const info = currentRes.studentInfo || {};
+        const studentMeta = info.name ? `${info.grade || '-'}학년 ${info.class || '-'}반 ${info.number || '-'}번 ${info.name}` : '학생 정보 없음';
+
         const content = `==================================================\n` +
             `          국어 작문 AI 평가 및 피드백 보고서\n` +
             `==================================================\n` +
             `과제명: ${currentRes.assignmentTitle}\n` +
+            `대상 학생: ${studentMeta}\n` +
             `일시: ${currentRes.timestamp}\n\n` +
             `--------------------------------------------------\n` +
-            `1. 종합 평가 결과: ${totalAcquired} / ${totalMax}점\n` +
+            `1. 종합 평가 결과: ${totalAcquired} / ${totalMax}점  (성취수준 ${ach.level} · ${ach.label}, ${ach.percentage}%)\n` +
             `--------------------------------------------------\n` +
             `${rubricsText}\n` +
             `--------------------------------------------------\n` +
@@ -1115,6 +1237,16 @@ function setupResultsViewHandlers() {
         
         showToast('텍스트 보고서 파일 다운로드가 완료되었습니다.', 'success');
     });
+    
+    // Download result as Word file (.doc)
+    const btnDownloadWord = document.getElementById('btn-download-word');
+    if (btnDownloadWord) {
+        btnDownloadWord.addEventListener('click', () => {
+            const currentRes = state.results.find(res => res.id === state.currentResultId);
+            if (!currentRes) return;
+            downloadResultAsWord(currentRes);
+        });
+    }
 }
 
 // URL 파라미터 체크하여 교사 모드 여부에 따라 사이드바 탭 제어
@@ -1122,8 +1254,8 @@ function checkTeacherModeAndSetupSidebar() {
     const urlParams = new URLSearchParams(window.location.search);
     const isTeacherModeUrl = urlParams.get('mode') === 'teacher';
     
-    // 교사 전용 탭 (설정 & 교사모드 설계)
-    const teacherNavItems = document.querySelectorAll('.nav-item[data-tab="config"], .nav-item[data-tab="teacher"]');
+    // 교사 전용 탭 (설정 & 교사모드 설계 & 제출 현황)
+    const teacherNavItems = document.querySelectorAll('.nav-item[data-tab="config"], .nav-item[data-tab="teacher"], #nav-item-submissions');
     
     if (!isTeacherModeUrl) {
         // 교사 모드가 아닐 때 (학생 접속) -> 탭 버튼 숨김
@@ -1134,7 +1266,7 @@ function checkTeacherModeAndSetupSidebar() {
         // 현재 active된 탭이 교사용 탭(config 등)이라면 student 탭으로 활성화 탭을 강제 이전
         const activeNavItem = document.querySelector('.nav-item.active');
         const activeTab = activeNavItem ? activeNavItem.getAttribute('data-tab') : '';
-        if (activeTab === 'config' || activeTab === 'teacher') {
+        if (activeTab === 'config' || activeTab === 'teacher' || activeTab === 'submissions') {
             const studentNavItem = document.querySelector('.nav-item[data-tab="student"]');
             if (studentNavItem) {
                 const navItems = document.querySelectorAll('.nav-item');
@@ -1148,6 +1280,11 @@ function checkTeacherModeAndSetupSidebar() {
                 renderStudentView();
             }
         }
+    } else {
+        // 교사 모드일 때 -> 모든 교사 탭 표시
+        teacherNavItems.forEach(item => {
+            item.style.display = 'flex';
+        });
     }
 }
 
@@ -1219,6 +1356,16 @@ function checkAndLoadSharedData() {
                     localStorage.setItem(STORAGE_KEYS.API_KEY, state.apiKey);
                 }
                 
+                if (sharedState.sheetUrl) {
+                    state.sheetUrl = sharedState.sheetUrl;
+                    localStorage.setItem(STORAGE_KEYS.SHEET_URL, state.sheetUrl);
+                }
+
+                if (sharedState.selectedModel) {
+                    state.selectedModel = sharedState.selectedModel;
+                    localStorage.setItem(STORAGE_KEYS.SELECTED_MODEL, state.selectedModel);
+                }
+                
                 state.assignment = sharedState.assignment;
                 state.rubrics = sharedState.rubrics;
                 
@@ -1288,7 +1435,9 @@ function setupShareLinkHandlers() {
         const sharedState = {
             assignment: state.assignment,
             rubrics: state.rubrics,
-            includeApiKey: checkApiKey.checked
+            includeApiKey: checkApiKey.checked,
+            sheetUrl: state.sheetUrl,
+            selectedModel: state.selectedModel // 교사가 검증한 작동 모델을 학생에게 전달
         };
         
         if (checkApiKey.checked) {
@@ -1331,6 +1480,597 @@ function setupShareLinkHandlers() {
     });
 }
 
+// --- Google Sheets Transmission & Submission Dashboard Logic ---
+
+// 구글 스프레드시트로 학생 작문 데이터 전송
+async function sendDataToGoogleSheets(result, studentText) {
+    if (!state.sheetUrl) return;
+    
+    // 개별 영역 점수 텍스트 포맷팅
+    let scoreDetails = [];
+    result.rubricsSnapshot.forEach(rubric => {
+        const score = result.scores[rubric.id] || 0;
+        scoreDetails.push(`${rubric.title}: ${score}/${rubric.maxScore}점`);
+    });
+    const scoresText = scoreDetails.join('\n');
+    
+    // 문장 첨삭 교정 내역 문자열 포맷팅
+    let revisionsText = '';
+    if (result.revisions && result.revisions.length > 0) {
+        result.revisions.forEach((rev, idx) => {
+            revisionsText += `[문장 ${idx+1}] 이전: ${rev.before} | 이후: ${rev.after} | 첨삭: ${rev.comment}\n`;
+        });
+    } else {
+        revisionsText = '없음';
+    }
+    
+    // 글자 수 포맷팅
+    const charCount = `공백포함 ${studentText.length}자 / 공백제외 ${studentText.replace(/\s/g, '').length}자`;
+    
+    // 총 획득 점수 및 성취수준 계산
+    let totalAcquired = 0;
+    let totalMax = 0;
+    result.rubricsSnapshot.forEach(rubric => {
+        totalAcquired += (result.scores[rubric.id] || 0);
+        totalMax += rubric.maxScore;
+    });
+    const achievement = computeOverallAchievement(totalAcquired, totalMax);
+
+    const postData = {
+        timestamp: result.timestamp,
+        grade: result.studentInfo?.grade ? `${result.studentInfo.grade}학년` : '-',
+        class: result.studentInfo?.class ? `${result.studentInfo.class}반` : '-',
+        number: result.studentInfo?.number ? `${result.studentInfo.number}번` : '-',
+        name: result.studentInfo?.name || '-',
+        assignmentTitle: result.assignmentTitle,
+        charCount: charCount,
+        totalScore: totalAcquired,
+        achievementLevel: `${achievement.level} (${achievement.label})`,
+        scoresText: scoresText,
+        strengths: result.strengths,
+        weaknesses: result.weaknesses,
+        revisionsText: revisionsText,
+        modelEssay: result.modelEssay,
+        studentText: result.studentText
+    };
+    
+    try {
+        await fetch(state.sheetUrl, {
+            method: 'POST',
+            body: JSON.stringify(postData),
+            mode: 'no-cors' // CORS 리다이렉트 예외 무시 전송 보장
+        });
+        showToast('과제가 구글 스프레드시트에 제출되었습니다.', 'success');
+    } catch (err) {
+        console.error('Failed to submit writing to Google Sheet:', err);
+    }
+}
+
+// 구글 스프레드시트에서 학생 제출 내역 로드
+async function loadSubmissionsFromGoogleSheets() {
+    if (!state.sheetUrl) {
+        showToast('설정 탭에서 구글 스프레드시트 연동 URL을 먼저 등록해 주세요.', 'error');
+        return;
+    }
+    
+    showLoading('제출 현황 불러오는 중...', '구글 스프레드시트에서 실시간으로 학생들의 제출 리스트를 가져오는 중입니다.');
+    
+    try {
+        const response = await fetch(state.sheetUrl);
+        const data = await response.json();
+        
+        if (data && Array.isArray(data)) {
+            // 필터링/대응을 위해 데이터 역순 배치 (최신 제출이 맨 위로)
+            state.submissions = data.reverse();
+            updateClassFilterOptions();
+            renderSubmissionsList();
+            showToast('제출 현황이 최신 정보로 갱신되었습니다.', 'success');
+        } else if (data && data.error) {
+            showToast(`데이터 불러오기 실패: ${data.error}`, 'error');
+        } else {
+            state.submissions = [];
+            renderSubmissionsList();
+            showToast('스프레드시트에 아직 제출 내역이 없습니다.', 'info');
+        }
+    } catch (err) {
+        console.error('Failed to load submissions from Google Sheets:', err);
+        showToast('제출 내역 로드 실패. 스프레드시트 권한 및 URL을 확인하세요.', 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+// 제출 명단 학급 필터 구성
+function updateClassFilterOptions() {
+    const filterSelect = document.getElementById('filter-class');
+    if (!filterSelect) return;
+    
+    const classes = new Set();
+    state.submissions.forEach(sub => {
+        if (sub.반) classes.add(sub.반.trim());
+    });
+    
+    const sortedClasses = Array.from(classes).sort((a, b) => {
+        const valA = parseInt(a) || 0;
+        const valB = parseInt(b) || 0;
+        return valA - valB;
+    });
+    
+    filterSelect.innerHTML = '<option value="">전체 반</option>';
+    sortedClasses.forEach(c => {
+        const option = document.createElement('option');
+        option.value = c;
+        option.textContent = c;
+        filterSelect.appendChild(option);
+    });
+}
+
+// 제출 명단 테이블 렌더링
+function renderSubmissionsList() {
+    const listBody = document.getElementById('submissions-list-body');
+    if (!listBody) return;
+    
+    const classFilter = document.getElementById('filter-class').value;
+    const searchFilter = document.getElementById('search-student').value.trim().toLowerCase();
+    
+    listBody.innerHTML = '';
+    
+    const filteredSubmissions = state.submissions.filter(sub => {
+        const matchClass = !classFilter || (sub.반 && sub.반.trim() === classFilter);
+        const matchSearch = !searchFilter || (sub.이름 && sub.이름.toLowerCase().includes(searchFilter));
+        return matchClass && matchSearch;
+    });
+    
+    if (filteredSubmissions.length === 0) {
+        listBody.innerHTML = `
+            <tr>
+                <td colspan="4" style="text-align: center; padding: 40px; color: var(--text-secondary);">
+                    제출된 명단이 없거나 검색 결과가 일치하지 않습니다.
+                </td>
+            </tr>
+        `;
+        return;
+    }
+    
+    filteredSubmissions.forEach((sub, idx) => {
+        const row = document.createElement('tr');
+        row.style.cursor = 'pointer';
+        row.style.borderBottom = '1px solid var(--border-color)';
+        
+        const isSelected = state.selectedSubmissionId === idx;
+        if (isSelected) {
+            row.style.backgroundColor = '#eef2ff';
+        }
+        
+        row.addEventListener('mouseover', () => {
+            if (!isSelected) row.style.backgroundColor = 'var(--bg-hover, #f8fafc)';
+        });
+        row.addEventListener('mouseout', () => {
+            row.style.backgroundColor = isSelected ? '#eef2ff' : 'transparent';
+        });
+        
+        row.innerHTML = `
+            <td style="padding: 12px 16px;">${sub.학년 || '-'} ${sub.반 || '-'} ${sub.번호 || '-'}</td>
+            <td style="padding: 12px 16px; font-weight: 600;">${sub.이름 || '-'}</td>
+            <td style="padding: 12px 16px; font-weight: bold; color: var(--color-indigo, #6366f1);">${sub.총점 || '0'}점${sub.성취수준 ? ' · ' + String(sub.성취수준).split(' ')[0] : ''}</td>
+            <td style="padding: 12px 16px; font-size: 0.8rem; color: var(--text-secondary);">${sub.제출시간 || '-'}</td>
+        `;
+        
+        row.addEventListener('click', () => {
+            state.selectedSubmissionId = idx;
+            renderSubmissionsList();
+            showSubmissionDetail(sub);
+        });
+        
+        listBody.appendChild(row);
+    });
+}
+
+// 명단에서 선택한 개별 학생 평가 상세 보기
+function showSubmissionDetail(sub) {
+    const emptyPanel = document.getElementById('submission-detail-empty');
+    const contentPanel = document.getElementById('submission-detail-content');
+    const actionsPanel = document.getElementById('submission-detail-actions');
+    
+    if (!emptyPanel || !contentPanel) return;
+    
+    emptyPanel.style.display = 'none';
+    contentPanel.style.display = 'block';
+    if (actionsPanel) actionsPanel.style.display = 'flex';
+    
+    document.getElementById('sub-detail-student-title').textContent = `${sub.이름 || '-'} (${sub.학년 || '-'} ${sub.반 || '-'} ${sub.번호 || '-'})`;
+    document.getElementById('sub-detail-time').textContent = `제출시간: ${sub.제출시간 || '-'}`;
+    const achText = sub.성취수준 ? `  ·  성취수준 ${sub.성취수준}` : '';
+    document.getElementById('sub-detail-score').textContent = `${sub.총점 || '0'} / 100${achText}`;
+    
+    // 기준별 상세 점수 파싱
+    const scoresList = document.getElementById('sub-detail-scores-list');
+    scoresList.innerHTML = '';
+    const scoresText = sub.평가기준별점수 || '';
+    scoresText.split('\n').forEach(line => {
+        if (line.trim()) {
+            const parts = line.split(':');
+            const div = document.createElement('div');
+            div.style.display = 'flex';
+            div.style.justifyContent = 'space-between';
+            div.innerHTML = `<span>${parts[0]}</span><strong style="color:var(--color-indigo, #6366f1);">${parts[1] || ''}</strong>`;
+            scoresList.appendChild(div);
+        }
+    });
+    
+    document.getElementById('sub-detail-student-text').textContent = sub.작성글 || '';
+    document.getElementById('sub-detail-strengths').textContent = sub.강점 || '';
+    document.getElementById('sub-detail-weaknesses').textContent = sub.개선점 || '';
+    document.getElementById('sub-detail-model').textContent = sub.모범답안 || '';
+    
+    // 첨삭 예시 리스트 렌더링
+    const revisionsContainer = document.getElementById('sub-detail-revisions');
+    revisionsContainer.innerHTML = '';
+    try {
+        const revisions = JSON.parse(sub.첨삭내용 || '[]');
+        if (Array.isArray(revisions) && revisions.length > 0) {
+            revisions.forEach((rev, idx) => {
+                const div = document.createElement('div');
+                div.className = 'revision-item';
+                div.style.padding = '12px';
+                div.style.border = '1px solid var(--border-color)';
+                div.style.borderRadius = '4px';
+                div.style.backgroundColor = '#fafafa';
+                div.style.marginBottom = '8px';
+                div.innerHTML = `
+                    <div style="font-weight:bold; font-size:0.8rem; margin-bottom:4px; color:var(--text-secondary);">[문장 ${idx+1}]</div>
+                    <div style="color:#ef4444; font-size:0.85rem; text-decoration:line-through; margin-bottom:2px;">이전: ${rev.before}</div>
+                    <div style="color:#10b981; font-size:0.85rem; font-weight:600; margin-bottom:4px;">이후: ${rev.after}</div>
+                    <div style="font-size:0.8rem; color:#4b5563; border-top:1px dashed #e2e8f0; padding-top:4px; margin-top:4px;">설명: ${rev.comment}</div>
+                `;
+                revisionsContainer.appendChild(div);
+            });
+        } else if (sub.첨삭내용 && sub.첨삭내용.trim() !== '없음') {
+            revisionsContainer.innerHTML = `<div style="font-size:0.85rem; white-space:pre-wrap; padding:12px; background:#fafafa; border:1px solid var(--border-color); border-radius:4px;">${sub.첨삭내용}</div>`;
+        } else {
+            revisionsContainer.innerHTML = '<p style="color:var(--text-secondary); font-style:italic; font-size:0.85rem;">첨삭 내역이 없습니다.</p>';
+        }
+    } catch (e) {
+        if (sub.첨삭내용 && sub.첨삭내용.trim() !== '없음') {
+            revisionsContainer.innerHTML = `<div style="font-size:0.85rem; white-space:pre-wrap; padding:12px; background:#fafafa; border:1px solid var(--border-color); border-radius:4px;">${sub.첨삭내용}</div>`;
+        } else {
+            revisionsContainer.innerHTML = '<p style="color:var(--text-secondary); font-style:italic; font-size:0.85rem;">첨삭 내역이 없습니다.</p>';
+        }
+    }
+    
+    // Word 다운로드 이벤트 매핑 복제 연결
+    const btnWord = document.getElementById('btn-download-submission-word');
+    if (btnWord) {
+        const newBtn = btnWord.cloneNode(true);
+        btnWord.parentNode.replaceChild(newBtn, btnWord);
+        newBtn.addEventListener('click', () => {
+            downloadSubmissionAsWord(sub);
+        });
+    }
+}
+
+// 개별 대시보드 선택 항목 Word로 저장
+function downloadSubmissionAsWord(sub) {
+    let totalMax = 0;
+    let rubricsRows = '';
+    
+    const scoresText = sub.평가기준별점수 || '';
+    scoresText.split('\n').forEach(line => {
+        if (line.trim()) {
+            const parts = line.split(':');
+            const scorePart = parts[1] || '';
+            const valParts = scorePart.replace('점', '').split('/');
+            const score = parseInt(valParts[0]) || 0;
+            const max = parseInt(valParts[1]) || 0;
+            totalMax += max;
+            rubricsRows += `
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #cbd5e1; font-weight: bold;">${parts[0]}</td>
+                    <td style="padding: 8px; border: 1px solid #cbd5e1; font-size: 0.85rem;">-</td>
+                    <td style="padding: 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: bold; color: #4f46e5;">${score} / ${max}점</td>
+                </tr>
+            `;
+        }
+    });
+    
+    let revisionsContent = '';
+    try {
+        const revisions = JSON.parse(sub.첨삭내용 || '[]');
+        if (Array.isArray(revisions) && revisions.length > 0) {
+            revisions.forEach((rev, idx) => {
+                revisionsContent += `
+                    <div style="margin-bottom: 12px; padding: 10px; border-left: 3px solid #f59e0b; background-color: #fffbeb;">
+                        <p style="margin: 0 0 4px 0; font-weight: bold;">[문장 ${idx+1}]</p>
+                        <p style="margin: 0 0 4px 0; color: #dc2626;"><del>이전: ${rev.before}</del></p>
+                        <p style="margin: 0 0 4px 0; color: #16a34a;"><strong>이후: ${rev.after}</strong></p>
+                        <p style="margin: 0; font-size: 0.85rem; color: #4b5563;">설명: ${rev.comment}</p>
+                    </div>
+                `;
+            });
+        } else if (sub.첨삭내용 && sub.첨삭내용.trim() !== '없음') {
+            revisionsContent = `<div style="padding: 10px; border: 1px solid #cbd5e1; background-color: #fafafa;">${sub.첨삭내용.replace(/\n/g, '<br>')}</div>`;
+        } else {
+            revisionsContent = '<p style="color: #6b7280; font-style: italic;">수정 권장 문장 없음</p>';
+        }
+    } catch (e) {
+        if (sub.첨삭내용 && sub.첨삭내용.trim() !== '없음') {
+            revisionsContent = `<div style="padding: 10px; border: 1px solid #cbd5e1; background-color: #fafafa;">${sub.첨삭내용.replace(/\n/g, '<br>')}</div>`;
+        } else {
+            revisionsContent = '<p style="color: #6b7280; font-style: italic;">수정 권장 문장 없음</p>';
+        }
+    }
+    
+    const studentMeta = `${sub.학년 || '-'} ${sub.반 || '-'} ${sub.번호 || '-'} 이름: ${sub.이름 || '-'}`;
+    
+    const htmlContent = `
+    <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+    <head>
+        <title>국어 작문 AI 평가 결과 보고서</title>
+        <style>
+            body { font-family: 'Malgun Gothic', 'Dotum', sans-serif; line-height: 1.6; color: #334155; padding: 20px; }
+            .title { font-size: 20pt; font-weight: bold; color: #4f46e5; text-align: center; margin-bottom: 10px; }
+            .meta-box { background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 12px; margin-bottom: 24px; }
+            h2 { font-size: 14pt; color: #1e1b4b; border-bottom: 2px solid #4f46e5; padding-bottom: 4px; margin-top: 24px; }
+            table.rubric-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            table.rubric-table th { background-color: #f1f5f9; padding: 8px; border: 1px solid #cbd5e1; font-weight: bold; text-align: left; }
+            .box { padding: 12px; border: 1px solid #e2e8f0; border-radius: 4px; background-color: #fafafa; }
+            .strength-box { border-left: 4px solid #10b981; background-color: #f0fdf4; padding: 12px; margin-bottom: 10px; }
+            .weakness-box { border-left: 4px solid #f59e0b; background-color: #fffbeb; padding: 12px; }
+        </style>
+    </head>
+    <body>
+        <div class="title">국어 작문 AI 평가 및 피드백 보고서</div>
+        <div style="text-align: center; font-size: 10pt; color: #64748b; margin-bottom: 20px;">제출 일시: ${sub.제출시간 || '-'}</div>
+        
+        <div class="meta-box">
+            <table style="width:100%; border:none;">
+                <tr>
+                    <td style="font-weight:bold; width: 15%;">과제명:</td>
+                    <td style="width: 45%;">${sub.과제명 || '-'}</td>
+                    <td style="font-weight:bold; width: 15%;">대상 학생:</td>
+                    <td style="width: 25%;">${studentMeta}</td>
+                </tr>
+            </table>
+        </div>
+
+        <h2>1. 종합 채점 결과: <span style="color:#4f46e5;">${sub.총점 || '0'} / ${totalMax || '100'}점</span>${sub.성취수준 ? ` <span style="font-size:12pt; color:#4f46e5;">(성취수준 ${sub.성취수준})</span>` : ''}</h2>
+        <table class="rubric-table">
+            <thead>
+                <tr>
+                    <th style="width: 30%;">평가 항목</th>
+                    <th style="width: 50%;">평가 기준</th>
+                    <th style="width: 20%; text-align: center;">획득 점수</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${rubricsRows}
+            </tbody>
+        </table>
+
+        <h2>2. 종합 평가 피드백</h2>
+        <div class="strength-box">
+            <p style="margin:0; font-weight:bold; color:#14532d; font-size:10.5pt;">[강점]</p>
+            <p style="margin:4px 0 0 0; color:#14532d; font-size:10pt;">${(sub.강점 || '').replace(/\n/g, '<br>')}</p>
+        </div>
+        <div class="weakness-box">
+            <p style="margin:0; font-weight:bold; color:#78350f; font-size:10.5pt;">[약점 및 개선 방향]</p>
+            <p style="margin:4px 0 0 0; color:#78350f; font-size:10pt;">${(sub.개선점 || '').replace(/\n/g, '<br>')}</p>
+        </div>
+
+        <h2>3. 문장 교정 및 첨삭 지도</h2>
+        <div>
+            ${revisionsContent}
+        </div>
+
+        <h2>4. 모범 답안 예시</h2>
+        <div class="box" style="font-size: 10pt;">
+            ${(sub.모범답안 || '').replace(/\n/g, '<br>')}
+        </div>
+
+        <h2>5. 작성한 글 원문</h2>
+        <div class="box" style="font-size: 10pt; background-color: #ffffff;">
+            ${(sub.작성글 || '').replace(/\n/g, '<br>')}
+        </div>
+    </body>
+    </html>
+    `;
+    
+    const blob = new Blob(['\ufeff' + htmlContent], { type: 'application/msword' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    
+    const infoStr = sub.이름 ? `_${sub.학년}_${sub.반}_${sub.번호}_${sub.이름}` : '';
+    const sanitizedTitle = (sub.과제명 || '국어평가').replace(/[^a-zA-Z0-9가-힣\s]/g, '');
+    link.setAttribute('download', `국어평가피드백_${sanitizedTitle}${infoStr}.doc`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+}
+
+// 개별 학생 결과 탭에서 Word로 저장
+function downloadResultAsWord(result) {
+    let totalAcquired = 0;
+    let totalMax = 0;
+    let rubricsRows = '';
+    
+    result.rubricsSnapshot.forEach(rubric => {
+        const score = result.scores[rubric.id] || 0;
+        totalAcquired += score;
+        totalMax += rubric.maxScore;
+        rubricsRows += `
+            <tr>
+                <td style="padding: 8px; border: 1px solid #cbd5e1; font-weight: bold;">${rubric.title}</td>
+                <td style="padding: 8px; border: 1px solid #cbd5e1; font-size: 0.85rem;">${rubric.description}</td>
+                <td style="padding: 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: bold; color: #4f46e5;">${score} / ${rubric.maxScore}점</td>
+            </tr>
+        `;
+    });
+    
+    let revisionsContent = '';
+    if (result.revisions && result.revisions.length > 0) {
+        result.revisions.forEach((rev, idx) => {
+            revisionsContent += `
+                <div style="margin-bottom: 12px; padding: 10px; border-left: 3px solid #f59e0b; background-color: #fffbeb;">
+                    <p style="margin: 0 0 4px 0; font-weight: bold;">[문장 ${idx+1}]</p>
+                    <p style="margin: 0 0 4px 0; color: #dc2626;"><del>이전: ${rev.before}</del></p>
+                    <p style="margin: 0 0 4px 0; color: #16a34a;"><strong>이후: ${rev.after}</strong></p>
+                    <p style="margin: 0; font-size: 0.85rem; color: #4b5563;">설명: ${rev.comment}</p>
+                </div>
+            `;
+        });
+    } else {
+        revisionsContent = '<p style="color: #6b7280; font-style: italic;">수정 권장 문장 없음</p>';
+    }
+    
+    const info = result.studentInfo || {};
+    const studentMeta = info.name ? `${info.grade || '-'}학년 ${info.class || '-'}반 ${info.number || '-'}번 이름: ${info.name}` : '학생 정보 없음';
+    const ach = computeOverallAchievement(totalAcquired, totalMax);
+
+    const htmlContent = `
+    <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+    <head>
+        <title>국어 작문 AI 평가 결과 보고서</title>
+        <style>
+            body { font-family: 'Malgun Gothic', 'Dotum', sans-serif; line-height: 1.6; color: #334155; padding: 20px; }
+            .title { font-size: 20pt; font-weight: bold; color: #4f46e5; text-align: center; margin-bottom: 10px; }
+            .meta-box { background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 12px; margin-bottom: 24px; }
+            h2 { font-size: 14pt; color: #1e1b4b; border-bottom: 2px solid #4f46e5; padding-bottom: 4px; margin-top: 24px; }
+            table.rubric-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            table.rubric-table th { background-color: #f1f5f9; padding: 8px; border: 1px solid #cbd5e1; font-weight: bold; text-align: left; }
+            .box { padding: 12px; border: 1px solid #e2e8f0; border-radius: 4px; background-color: #fafafa; }
+            .strength-box { border-left: 4px solid #10b981; background-color: #f0fdf4; padding: 12px; margin-bottom: 10px; }
+            .weakness-box { border-left: 4px solid #f59e0b; background-color: #fffbeb; padding: 12px; }
+        </style>
+    </head>
+    <body>
+        <div class="title">국어 작문 AI 평가 및 피드백 보고서</div>
+        <div style="text-align: center; font-size: 10pt; color: #64748b; margin-bottom: 20px;">제출 일시: ${result.timestamp}</div>
+        
+        <div class="meta-box">
+            <table style="width:100%; border:none;">
+                <tr>
+                    <td style="font-weight:bold; width: 15%;">과제명:</td>
+                    <td style="width: 45%;">${result.assignmentTitle}</td>
+                    <td style="font-weight:bold; width: 15%;">대상 학생:</td>
+                    <td style="width: 25%;">${studentMeta}</td>
+                </tr>
+            </table>
+        </div>
+
+        <h2>1. 종합 채점 결과: <span style="color:#4f46e5;">${totalAcquired} / ${totalMax}점</span> <span style="font-size:12pt; color:#4f46e5;">(성취수준 ${ach.level} · ${ach.label}, ${ach.percentage}%)</span></h2>
+        <table class="rubric-table">
+            <thead>
+                <tr>
+                    <th style="width: 30%;">평가 항목</th>
+                    <th style="width: 50%;">평가 기준</th>
+                    <th style="width: 20%; text-align: center;">획득 점수</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${rubricsRows}
+            </tbody>
+        </table>
+
+        <h2>2. 종합 평가 피드백</h2>
+        <div class="strength-box">
+            <p style="margin:0; font-weight:bold; color:#14532d; font-size:10.5pt;">[강점]</p>
+            <p style="margin:4px 0 0 0; color:#14532d; font-size:10pt;">${result.strengths.replace(/\n/g, '<br>')}</p>
+        </div>
+        <div class="weakness-box">
+            <p style="margin:0; font-weight:bold; color:#78350f; font-size:10.5pt;">[약점 및 개선 방향]</p>
+            <p style="margin:4px 0 0 0; color:#78350f; font-size:10pt;">${result.weaknesses.replace(/\n/g, '<br>')}</p>
+        </div>
+
+        <h2>3. 문장 교정 및 첨삭 지도</h2>
+        <div>
+            ${revisionsContent}
+        </div>
+
+        <h2>4. 모범 답안 예시</h2>
+        <div class="box" style="font-size: 10pt;">
+            ${result.modelEssay.replace(/\n/g, '<br>')}
+        </div>
+
+        <h2>5. 작성한 글 원문</h2>
+        <div class="box" style="font-size: 10pt; background-color: #ffffff;">
+            ${result.studentText.replace(/\n/g, '<br>')}
+        </div>
+    </body>
+    </html>
+    `;
+    
+    const blob = new Blob(['\ufeff' + htmlContent], { type: 'application/msword' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    
+    const infoStr = info.name ? `_${info.grade}학년${info.class}반${info.number}번_${info.name}` : '';
+    const sanitizedTitle = result.assignmentTitle.replace(/[^a-zA-Z0-9가-힣\s]/g, '');
+    link.setAttribute('download', `국어평가피드백_${sanitizedTitle}${infoStr}.doc`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+}
+
+// 교사용 제출 현황 대시보드 제어 및 클릭 리스너 바인딩
+function setupSubmissionsDashboardHandlers() {
+    const btnRefresh = document.getElementById('btn-refresh-submissions');
+    const filterClass = document.getElementById('filter-class');
+    const searchStudent = document.getElementById('search-student');
+    const btnSaveSheet = document.getElementById('btn-save-sheet-url');
+    const sheetInput = document.getElementById('sheet-url-input');
+    const btnCopyScript = document.getElementById('btn-copy-apps-script');
+    
+    // 설정값 연동 로드
+    if (sheetInput) sheetInput.value = state.sheetUrl || '';
+    
+    // 구글 스프레드시트 설정 저장
+    if (btnSaveSheet && sheetInput) {
+        btnSaveSheet.addEventListener('click', () => {
+            const url = sheetInput.value.trim();
+            state.sheetUrl = url;
+            saveStateToStorage();
+            showToast('구글 스프레드시트 연동 주소가 저장되었습니다.', 'success');
+        });
+    }
+    
+    // Apps Script 코드 복사
+    if (btnCopyScript) {
+        btnCopyScript.addEventListener('click', () => {
+            const codeBox = document.getElementById('apps-script-code-box');
+            if (codeBox) {
+                navigator.clipboard.writeText(codeBox.value)
+                    .then(() => showToast('Apps Script 소스코드가 클립보드에 복사되었습니다!', 'success'))
+                    .catch(() => showToast('코드 복사에 실패했습니다.', 'error'));
+            }
+        });
+    }
+    
+    // 대시보드 새로고침
+    if (btnRefresh) {
+        btnRefresh.addEventListener('click', () => {
+            loadSubmissionsFromGoogleSheets();
+        });
+    }
+    
+    // 학급 정보 필터
+    if (filterClass) {
+        filterClass.addEventListener('change', () => {
+            renderSubmissionsList();
+        });
+    }
+    
+    // 이름 검색 필터
+    if (searchStudent) {
+        searchStudent.addEventListener('input', () => {
+            renderSubmissionsList();
+        });
+    }
+}
+
 // --- App Initialization ---
 document.addEventListener('DOMContentLoaded', () => {
     // Load local storage states
@@ -1342,9 +2082,19 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize icons
     lucide.createIcons();
     
+    // 학생 학적 정보 입력 폼 초기값 복원
+    const gradeSelect = document.getElementById('student-grade');
+    const classInput = document.getElementById('student-class');
+    const numberInput = document.getElementById('student-number');
+    const nameInput = document.getElementById('student-name');
+    if (gradeSelect) gradeSelect.value = state.studentInfo.grade || '';
+    if (classInput) classInput.value = state.studentInfo.class || '';
+    if (numberInput) numberInput.value = state.studentInfo.number || '';
+    if (nameInput) nameInput.value = state.studentInfo.name || '';
+    
     // Setup component handlers
     setupTabs();
-    checkTeacherModeAndSetupSidebar(); // URL 파라미터 체크하여 교사용 메뉴 숨김
+    checkTeacherModeAndSetupSidebar(); // URL 파라미터 체크하여 교사용 메뉴 설정
     updateApiStatusIndicator();
     setupApiKeyHandlers();
     setupTeacherPasswordHandlers(); // 교사 비밀번호 관리 핸들러 연동
@@ -1352,4 +2102,5 @@ document.addEventListener('DOMContentLoaded', () => {
     setupStudentViewHandlers();
     setupResultsViewHandlers();
     setupShareLinkHandlers(); // 공유 링크 생성 핸들러 연동
+    setupSubmissionsDashboardHandlers(); // 구글 대시보드 핸들러 연동
 });
