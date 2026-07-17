@@ -783,7 +783,7 @@ function renderAssignmentLibrary() {
         const opt = document.createElement('option');
         opt.value = item.id;
         const title = (item.assignment && item.assignment.title) ? item.assignment.title : '(제목 없음)';
-        opt.textContent = `${item.savedAt} · ${title.slice(0, 20)}`;
+        opt.textContent = `${item.savedAt} · ${title}`;
         select.appendChild(opt);
     });
 }
@@ -1821,7 +1821,7 @@ function updateAssignmentFilterOptions() {
     sortedTitles.forEach(t => {
         const option = document.createElement('option');
         option.value = t;
-        option.textContent = t.length > 24 ? t.slice(0, 24) + '…' : t;
+        option.textContent = t;
         filterSelect.appendChild(option);
     });
 }
