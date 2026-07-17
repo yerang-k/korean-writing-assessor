@@ -1547,20 +1547,45 @@ async function sendDataToGoogleSheets(result, studentText) {
 }
 
 // 구글 스프레드시트에서 학생 제출 내역 로드
-async function loadSubmissionsFromGoogleSheets() {
+// Apps Script 웹앱 GET은 브라우저 CORS 정책상 fetch로 직접 읽으면 자주 차단되므로,
+// CORS 제약이 없는 JSONP(<script> 태그 + callback 파라미터) 방식으로 불러옵니다.
+function loadSubmissionsFromGoogleSheets() {
     if (!state.sheetUrl) {
         showToast('설정 탭에서 구글 스프레드시트 연동 URL을 먼저 등록해 주세요.', 'error');
         return;
     }
-    
+
     showLoading('제출 현황 불러오는 중...', '구글 스프레드시트에서 실시간으로 학생들의 제출 리스트를 가져오는 중입니다.');
-    
-    try {
-        const response = await fetch(state.sheetUrl);
-        const data = await response.json();
-        
+
+    const callbackName = 'kwaJsonp_' + Date.now();
+    const script = document.createElement('script');
+    let finished = false;
+    let timer = null;
+
+    const cleanup = () => {
+        try { delete window[callbackName]; } catch (e) { window[callbackName] = undefined; }
+        if (script.parentNode) script.parentNode.removeChild(script);
+        if (timer) clearTimeout(timer);
+    };
+
+    const fail = (reason) => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        hideLoading();
+        console.error('Failed to load submissions (JSONP):', reason);
+        showToast('제출 내역 로드 실패. Apps Script 배포 시 "액세스: 모든 사용자"로 설정했는지, URL이 /exec로 끝나는지 확인하세요.', 'error');
+    };
+
+    // 스프레드시트에서 데이터가 도착하면 실행되는 전역 콜백
+    window[callbackName] = (data) => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        hideLoading();
+
         if (data && Array.isArray(data)) {
-            // 필터링/대응을 위해 데이터 역순 배치 (최신 제출이 맨 위로)
+            // 최신 제출이 맨 위로 오도록 역순 배치
             state.submissions = data.reverse();
             updateClassFilterOptions();
             renderSubmissionsList();
@@ -1572,12 +1597,15 @@ async function loadSubmissionsFromGoogleSheets() {
             renderSubmissionsList();
             showToast('스프레드시트에 아직 제출 내역이 없습니다.', 'info');
         }
-    } catch (err) {
-        console.error('Failed to load submissions from Google Sheets:', err);
-        showToast('제출 내역 로드 실패. 스프레드시트 권한 및 URL을 확인하세요.', 'error');
-    } finally {
-        hideLoading();
-    }
+    };
+
+    // 15초 내 응답이 없으면 실패 처리
+    timer = setTimeout(() => fail('시간 초과'), 15000);
+    script.onerror = () => fail('스크립트 로드 오류');
+
+    const sep = state.sheetUrl.includes('?') ? '&' : '?';
+    script.src = `${state.sheetUrl}${sep}callback=${callbackName}&t=${Date.now()}`;
+    document.body.appendChild(script);
 }
 
 // 제출 명단 학급 필터 구성

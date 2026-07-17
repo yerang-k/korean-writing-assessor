@@ -180,12 +180,22 @@ function doGet(e) {
       }
       data.push(record);
     }
-    return ContentService.createTextOutput(JSON.stringify(data))
-      .setMimeType(ContentService.MimeType.JSON);
+    return respond(data, e);
   } catch(err) {
-    return ContentService.createTextOutput(JSON.stringify({error: err.toString()}))
-      .setMimeType(ContentService.MimeType.JSON);
+    return respond({error: err.toString()}, e);
   }
+}
+
+// callback 파라미터가 있으면 JSONP로, 없으면 일반 JSON으로 응답
+function respond(obj, e) {
+  var out = JSON.stringify(obj);
+  var cb = e && e.parameter && e.parameter.callback;
+  if (cb) {
+    return ContentService.createTextOutput(cb + '(' + out + ')')
+      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+  }
+  return ContentService.createTextOutput(out)
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
 function doPost(e) {
