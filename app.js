@@ -994,6 +994,25 @@ function computeOverallAchievement(totalAcquired, totalMax) {
     return { ...info, percentage: Math.round(pct) };
 }
 
+// '이전 평가 기록' 드롭다운에 표시할 라벨 ('MM/DD HH:mm · 제목' 형식).
+// 제출 시각은 결과 id(res-<밀리초>)에서 복원하고, 실패 시 저장된 timestamp 문자열을 그대로 사용.
+function formatResultLabel(res) {
+    let stamp = res.timestamp || '';
+    const ms = Number(String(res.id || '').replace('res-', ''));
+    if (!isNaN(ms) && ms > 0) {
+        const d = new Date(ms);
+        if (!isNaN(d.getTime())) {
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            const dd = String(d.getDate()).padStart(2, '0');
+            const hh = String(d.getHours()).padStart(2, '0');
+            const mi = String(d.getMinutes()).padStart(2, '0');
+            stamp = `${mm}/${dd} ${hh}:${mi}`;
+        }
+    }
+    const title = (res.assignmentTitle || '평가 기록').slice(0, 14);
+    return `${stamp} · ${title}`;
+}
+
 // --- Results & Feedback View Logic ---
 function renderResultsView() {
     const emptyState = document.getElementById('results-empty-state');
@@ -1017,7 +1036,7 @@ function renderResultsView() {
     state.results.forEach(res => {
         const option = document.createElement('option');
         option.value = res.id;
-        option.textContent = `[${res.timestamp.split(' ')[2] || ''}] ${res.assignmentTitle.slice(0, 15)}...`;
+        option.textContent = formatResultLabel(res);
         if (res.id === state.currentResultId) {
             option.selected = true;
         }
