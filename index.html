@@ -264,9 +264,18 @@ function doPost(e) {
 
             <!-- TAB 2: 교사 모드 -->
             <section id="tab-teacher" class="tab-panel">
-                <div class="panel-header">
-                    <h2>교사 모드 (평가 설계)</h2>
-                    <p>학생들에게 제시할 지문과 주제를 입력하고, 채점을 위한 평가 기준을 설정합니다.</p>
+                <div class="panel-header justify-between flex-row">
+                    <div>
+                        <h2>교사 모드 (평가 설계)</h2>
+                        <p>학생들에게 제시할 지문과 주제를 입력하고, 채점을 위한 평가 기준을 설정합니다.</p>
+                    </div>
+                    <div class="teacher-goto-wrapper">
+                        <select id="teacher-goto-student" class="form-select" title="설계가 끝난 학생 화면으로 바로 이동합니다">
+                            <option value="">🔎 학생 화면 바로가기 ▾</option>
+                            <option value="student">✍️ 학생 작문 화면</option>
+                            <option value="results">📊 채점 결과 화면</option>
+                        </select>
+                    </div>
                 </div>
 
                 <div class="panel-body grid-2" style="height: auto; overflow-y: visible; align-content: start;">

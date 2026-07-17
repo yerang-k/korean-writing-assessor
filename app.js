@@ -1281,11 +1281,44 @@ function checkTeacherModeAndSetupSidebar() {
             }
         }
     } else {
-        // 교사 모드일 때 -> 모든 교사 탭 표시
+        // 교사 모드일 때 -> 교사 전용 탭(설정/교사모드/제출현황)만 표시
         teacherNavItems.forEach(item => {
             item.style.display = 'flex';
         });
+        // 학생용 화면(학생 모드 작문 / 평가 결과)은 사이드바에서 숨김.
+        // → 교사 모드 상단의 '학생 화면 바로가기' 드롭다운으로만 진입하도록 하여 혼동을 줄임.
+        document.querySelectorAll('.nav-item[data-tab="student"], .nav-item[data-tab="results"]').forEach(item => {
+            item.style.display = 'none';
+        });
     }
+}
+
+// 교사 모드 상단 '학생 화면 바로가기' 드롭다운 핸들러
+// 학생 모드/평가 결과 탭은 교사 사이드바에서 숨겨져 있으므로, 이 드롭다운이 유일한 진입점입니다.
+function setupTeacherGotoDropdown() {
+    const gotoSelect = document.getElementById('teacher-goto-student');
+    if (!gotoSelect) return;
+
+    gotoSelect.addEventListener('change', () => {
+        const target = gotoSelect.value;
+        if (!target) return;
+
+        // 사이드바 활성 표시 초기화 후 대상 패널만 활성화 (해당 탭 버튼은 교사 모드에서 숨김 상태)
+        document.querySelectorAll('.nav-item').forEach(nav => nav.classList.remove('active'));
+        document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.remove('active'));
+
+        const targetPanel = document.getElementById(`tab-${target}`);
+        if (targetPanel) targetPanel.classList.add('active');
+
+        if (target === 'student') {
+            renderStudentView();
+        } else if (target === 'results') {
+            renderResultsView();
+        }
+
+        // 드롭다운을 기본값으로 되돌려 다시 선택할 수 있게 함
+        gotoSelect.value = '';
+    });
 }
 
 // 교사 비밀번호 관리 핸들러
@@ -2131,4 +2164,5 @@ document.addEventListener('DOMContentLoaded', () => {
     setupResultsViewHandlers();
     setupShareLinkHandlers(); // 공유 링크 생성 핸들러 연동
     setupSubmissionsDashboardHandlers(); // 구글 대시보드 핸들러 연동
+    setupTeacherGotoDropdown(); // 교사 모드 상단 '학생 화면 바로가기' 드롭다운 연동
 });

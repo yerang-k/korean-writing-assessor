@@ -1100,3 +1100,24 @@ textarea {
     color: #b91c1c;
     border-color: #fecaca;
 }
+
+/* ===== 교사 모드 상단 '학생 화면 바로가기' 드롭다운 ===== */
+.teacher-goto-wrapper {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+#teacher-goto-student {
+    padding: 9px 14px;
+    border-radius: var(--radius-md, 8px);
+    border: 1px solid var(--color-indigo, #6366f1);
+    background-color: #eef2ff;
+    color: #4338ca;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    min-width: 180px;
+}
+#teacher-goto-student:hover {
+    background-color: #e0e7ff;
+}
