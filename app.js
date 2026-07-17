@@ -466,6 +466,7 @@ function setupTeacherViewHandlers() {
     const topicInput = document.getElementById('assignment-topic');
     const minCharInput = document.getElementById('min-char-count');
     const maxCharInput = document.getElementById('max-char-count');
+    const allowResubmitCheckbox = document.getElementById('allow-resubmit-checkbox');
     const btnGenRubric = document.getElementById('btn-generate-rubric');
     const btnAddItem = document.getElementById('btn-add-rubric-item');
 
@@ -475,6 +476,8 @@ function setupTeacherViewHandlers() {
     topicInput.value = state.assignment.topic;
     minCharInput.value = state.assignment.minChar;
     maxCharInput.value = state.assignment.maxChar;
+    // 중복 제출 허용 여부(기본: 허용). false로 명시된 경우에만 체크 해제
+    if (allowResubmitCheckbox) allowResubmitCheckbox.checked = state.assignment.allowResubmit !== false;
 
     // Local changes sync to state and LocalStorage
     const syncAssignment = () => {
@@ -483,12 +486,14 @@ function setupTeacherViewHandlers() {
         state.assignment.topic = topicInput.value.trim();
         state.assignment.minChar = parseInt(minCharInput.value) || 0;
         state.assignment.maxChar = parseInt(maxCharInput.value) || 0;
+        if (allowResubmitCheckbox) state.assignment.allowResubmit = allowResubmitCheckbox.checked;
         saveStateToStorage();
     };
 
     [titleInput, passageInput, topicInput, minCharInput, maxCharInput].forEach(element => {
         element.addEventListener('input', syncAssignment);
     });
+    if (allowResubmitCheckbox) allowResubmitCheckbox.addEventListener('change', syncAssignment);
 
     // Add Rubric item manually
     btnAddItem.addEventListener('click', () => {
@@ -818,6 +823,8 @@ function setupAssignmentLibraryHandlers() {
         if (topicInput) topicInput.value = state.assignment.topic || '';
         if (minCharInput) minCharInput.value = (state.assignment.minChar !== undefined ? state.assignment.minChar : 400);
         if (maxCharInput) maxCharInput.value = (state.assignment.maxChar !== undefined ? state.assignment.maxChar : 800);
+        const resubmitCheckbox = document.getElementById('allow-resubmit-checkbox');
+        if (resubmitCheckbox) resubmitCheckbox.checked = state.assignment.allowResubmit !== false;
         renderRubricList();
     };
 
@@ -993,7 +1000,26 @@ function setupStudentViewHandlers() {
             showToast('Gemini API Key가 필요합니다. [설정 & API] 탭을 확인하세요.', 'error');
             return;
         }
-        
+
+        // 중복 제출 제한: 교사가 '중복 제출 허용'을 끈 과제는 학생이 1회만 제출 가능
+        if (state.assignment.allowResubmit === false) {
+            // 1) 같은 브라우저에서의 재제출 차단
+            if (localStorage.getItem(getSubmissionKey())) {
+                showToast('이 과제는 1회만 제출할 수 있습니다. 이미 제출한 기록이 있어 다시 제출할 수 없습니다.', 'error');
+                return;
+            }
+            // 2) 스프레드시트에서 이미 제출했는지 확인 (다른 기기 포함)
+            if (state.sheetUrl) {
+                showLoading('제출 가능 여부 확인 중...', '이미 제출한 기록이 있는지 확인하고 있습니다.');
+                const already = await checkAlreadySubmitted();
+                hideLoading();
+                if (already) {
+                    showToast('이 과제는 1회만 제출할 수 있습니다. 이미 제출한 기록이 있어 다시 제출할 수 없습니다.', 'error');
+                    return;
+                }
+            }
+        }
+
         showLoading('AI 채점 및 피드백 생성 중...', '설정된 루브릭 항목별로 문장 구성과 내용을 분석하여 점수를 계산하고 보완할 점을 작성하고 있습니다.');
         
         // Build Rubric string for prompt
@@ -1076,7 +1102,12 @@ JSON Schema 형식:
             state.results.unshift(newResult); // Add to the beginning of the array
             state.currentResultId = newResult.id;
             saveStateToStorage();
-            
+
+            // 1회 제출 제한 과제인 경우, 같은 브라우저 재제출 차단용 플래그 기록
+            if (state.assignment.allowResubmit === false) {
+                localStorage.setItem(getSubmissionKey(), '1');
+            }
+
             // 구글 스프레드시트 연동이 되어 있다면 데이터 전송 (백그라운드 실행)
             if (state.sheetUrl) {
                 sendDataToGoogleSheets(newResult, studentText);
@@ -1714,6 +1745,51 @@ async function sendDataToGoogleSheets(result, studentText) {
     } catch (err) {
         console.error('Failed to submit writing to Google Sheet:', err);
     }
+}
+
+// 1회 제출 제한 시 같은 브라우저 재제출을 막기 위한 로컬 키 (과제+학생 식별)
+function getSubmissionKey() {
+    const info = state.studentInfo || {};
+    return `kwa_done_${state.assignment.title || ''}_${info.grade || ''}_${info.class || ''}_${info.number || ''}_${info.name || ''}`;
+}
+
+// 같은 학생이 해당 과제를 이미 제출했는지 스프레드시트에 JSONP로 확인 (1회 제출 제한용).
+// 확인 실패(네트워크/시간초과)는 제출을 막지 않도록 false 처리(fail-open)합니다.
+function checkAlreadySubmitted() {
+    return new Promise((resolve) => {
+        if (!state.sheetUrl) { resolve(false); return; }
+
+        const cb = 'kwaCheck_' + Date.now();
+        const script = document.createElement('script');
+        let done = false;
+        let timer = null;
+
+        const cleanup = () => {
+            try { delete window[cb]; } catch (e) { window[cb] = undefined; }
+            if (script.parentNode) script.parentNode.removeChild(script);
+            if (timer) clearTimeout(timer);
+        };
+        const finish = (val) => { if (done) return; done = true; cleanup(); resolve(val); };
+
+        window[cb] = (data) => finish(!!(data && data.exists));
+        timer = setTimeout(() => finish(false), 12000);
+        script.onerror = () => finish(false);
+
+        const info = state.studentInfo || {};
+        const params = new URLSearchParams({
+            action: 'check',
+            assignment: state.assignment.title || '',
+            grade: info.grade || '',
+            class: info.class || '',
+            number: info.number || '',
+            name: info.name || '',
+            callback: cb,
+            t: String(Date.now())
+        });
+        const sep = state.sheetUrl.includes('?') ? '&' : '?';
+        script.src = `${state.sheetUrl}${sep}${params.toString()}`;
+        document.body.appendChild(script);
+    });
 }
 
 // 구글 스프레드시트에서 학생 제출 내역 로드

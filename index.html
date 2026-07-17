@@ -155,7 +155,8 @@
                                 </summary>
                                 <div style="margin-top: 10px; font-size: 0.85rem; line-height: 1.6; color: var(--text-secondary);">
                                     <ol style="padding-left: 20px; margin-bottom: 12px;">
-                                        <li>구글 스프레드시트를 생성하고, 첫 번째 행(1행)에 아래 항목을 순서대로 적습니다:<br>
+                                        <li>구글 스프레드시트를 <strong>하나 새로 만듭니다.</strong> (과제별 탭과 머리글은 학생이 제출할 때 <strong>자동으로 생성</strong>되므로 직접 만들 필요가 없습니다.)<br>
+                                            <span style="color: var(--text-secondary); font-size: 0.78rem;">참고 — 각 과제 탭에 자동으로 들어가는 항목:</span><br>
                                             <code style="background: #e2e8f0; padding: 2px 4px; border-radius: 4px; display: inline-block; margin-top: 4px; font-size: 0.75rem; word-break: break-all; color: #000;">
                                                 제출시간, 학년, 반, 번호, 이름, 과제명, 글자수, 총점, 성취수준, 평가기준별점수, 강점, 개선점, 첨삭내용, 모범답안, 작성글
                                             </code>
@@ -166,24 +167,95 @@
                                     
                                     <div class="code-copy-container" style="position: relative; margin-bottom: 12px;">
                                         <textarea id="apps-script-code-box" readonly style="width: 100%; height: 180px; font-family: monospace; font-size: 0.75rem; padding: 8px; border-radius: 4px; border: 1px solid #cbd5e1; resize: none; background: #fafafa; color: #333;">
+var HEADERS = ['제출시간','학년','반','번호','이름','과제명','글자수','총점','성취수준','평가기준별점수','강점','개선점','첨삭내용','모범답안','작성글'];
+
+// 과제명을 구글 시트 탭 이름으로 사용할 수 있게 정리 (금지문자 제거, 최대 90자)
+function sanitizeSheetName(name) {
+  var n = String(name || '').replace(/[\\\/\?\*\[\]:]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!n) n = '기타';
+  return n.substring(0, 90);
+}
+
+// 과제명 탭을 찾거나(없으면 생성 후 머리글 추가) 반환
+function getOrCreateSheet(ss, name) {
+  var sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+    sheet.appendRow(HEADERS);
+  }
+  return sheet;
+}
+
+// 제출 저장: 과제명별 탭에 자동 분리하여 누적
+function doPost(e) {
+  try {
+    var data = JSON.parse(e.postData.contents);
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = getOrCreateSheet(ss, sanitizeSheetName(data.assignmentTitle || '기타'));
+    sheet.appendRow([
+      data.timestamp, data.grade, data.class, data.number, data.name,
+      data.assignmentTitle, data.charCount, data.totalScore, data.achievementLevel,
+      data.scoresText, data.strengths, data.weaknesses, data.revisionsText,
+      data.modelEssay, data.studentText
+    ]);
+    return ContentService.createTextOutput(JSON.stringify({result: "success"}))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch(err) {
+    return ContentService.createTextOutput(JSON.stringify({result: "error", error: err.toString()}))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// 조회: action=check 이면 중복 제출 여부, 아니면 모든 과제 탭을 합쳐서 반환
 function doGet(e) {
   try {
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-    var rows = sheet.getDataRange().getValues();
-    var headers = rows[0];
-    var data = [];
-    for (var i = 1; i < rows.length; i++) {
-      var row = rows[i];
-      var record = {};
-      for (var j = 0; j < headers.length; j++) {
-        record[headers[j]] = row[j];
-      }
-      data.push(record);
+    var p = (e && e.parameter) ? e.parameter : {};
+    if (p.action === 'check') {
+      return respond({ exists: hasSubmitted(p) }, e);
     }
-    return respond(data, e);
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheets = ss.getSheets();
+    var all = [];
+    for (var s = 0; s < sheets.length; s++) {
+      var rows = sheets[s].getDataRange().getValues();
+      if (rows.length < 2) continue;
+      var headers = rows[0];
+      if (String(headers[0]).trim() !== '제출시간') continue; // 제출 탭만 대상
+      for (var i = 1; i < rows.length; i++) {
+        var record = {};
+        for (var j = 0; j < headers.length; j++) {
+          record[headers[j]] = rows[i][j];
+        }
+        all.push(record);
+      }
+    }
+    return respond(all, e);
   } catch(err) {
     return respond({error: err.toString()}, e);
   }
+}
+
+// 같은 학생(학년/반/번호/이름)이 해당 과제에 이미 제출했는지 확인
+function hasSubmitted(p) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(sanitizeSheetName(p.assignment || ''));
+  if (!sheet) return false;
+  var rows = sheet.getDataRange().getValues();
+  if (rows.length < 2) return false;
+  var headers = rows[0];
+  var idx = {};
+  for (var j = 0; j < headers.length; j++) idx[String(headers[j]).trim()] = j;
+  var digits = function(v){ var m = String(v).match(/\d+/); return m ? m[0] : String(v).trim(); };
+  for (var i = 1; i < rows.length; i++) {
+    var r = rows[i];
+    if (digits(r[idx['학년']]) === digits(p.grade) &&
+        digits(r[idx['반']]) === digits(p.class) &&
+        digits(r[idx['번호']]) === digits(p.number) &&
+        String(r[idx['이름']]).trim() === String(p.name).trim()) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // callback 파라미터가 있으면 JSONP로, 없으면 일반 JSON으로 응답
@@ -196,35 +268,6 @@ function respond(obj, e) {
   }
   return ContentService.createTextOutput(out)
     .setMimeType(ContentService.MimeType.JSON);
-}
-
-function doPost(e) {
-  try {
-    var data = JSON.parse(e.postData.contents);
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-    sheet.appendRow([
-      data.timestamp,
-      data.grade,
-      data.class,
-      data.number,
-      data.name,
-      data.assignmentTitle,
-      data.charCount,
-      data.totalScore,
-      data.achievementLevel,
-      data.scoresText,
-      data.strengths,
-      data.weaknesses,
-      data.revisionsText,
-      data.modelEssay,
-      data.studentText
-    ]);
-    return ContentService.createTextOutput(JSON.stringify({result: "success"}))
-      .setMimeType(ContentService.MimeType.JSON);
-  } catch(err) {
-    return ContentService.createTextOutput(JSON.stringify({result: "error", error: err.toString()}))
-      .setMimeType(ContentService.MimeType.JSON);
-  }
 }</textarea>
                                         <button id="btn-copy-apps-script" class="btn btn-secondary btn-sm" style="position: absolute; right: 8px; top: 8px; padding: 4px 8px; font-size: 0.75rem;">
                                             코드 복사
@@ -371,6 +414,13 @@ function doPost(e) {
                                     <label for="max-char-count">최대 글자 수</label>
                                     <input type="number" id="max-char-count" value="800" min="0">
                                 </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="checkbox-container" style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.9rem; user-select: none;">
+                                    <input type="checkbox" id="allow-resubmit-checkbox" checked style="width: 16px; height: 16px; accent-color: var(--color-indigo, #6366f1); flex-shrink: 0;">
+                                    <span>중복 제출 허용 <span style="color: var(--text-secondary); font-weight: 400;">(체크 해제 시 학생은 이 과제를 <strong>1회만</strong> 제출할 수 있습니다)</span></span>
+                                </label>
                             </div>
 
                             <button id="btn-generate-rubric" class="btn btn-primary btn-full">
