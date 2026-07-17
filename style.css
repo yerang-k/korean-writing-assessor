@@ -1121,3 +1121,16 @@ textarea {
 #teacher-goto-student:hover {
     background-color: #e0e7ff;
 }
+
+/* ===== 과제 보관함 바 ===== */
+.assignment-library-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+}
+.library-bar-spacer {
+    flex: 1 1 12px;
+    min-width: 8px;
+}

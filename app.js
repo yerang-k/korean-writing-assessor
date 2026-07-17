@@ -20,7 +20,8 @@ let state = {
         name: ''
     },
     submissions: [], // Accumulated student submissions loaded from Google Sheets
-    selectedSubmissionId: null
+    selectedSubmissionId: null,
+    assignmentLibrary: [] // 저장된 과제 설계 보관함 [{ id, savedAt, assignment, rubrics }]
 };
 
 // --- LocalStorage Logic ---
@@ -32,7 +33,8 @@ const STORAGE_KEYS = {
     RUBRICS: 'kwa_rubrics',
     RESULTS: 'kwa_results',
     SHEET_URL: 'kwa_sheet_url',
-    STUDENT_INFO: 'kwa_student_info'
+    STUDENT_INFO: 'kwa_student_info',
+    ASSIGNMENT_LIBRARY: 'kwa_assignment_library'
 };
 
 function loadStateFromStorage() {
@@ -63,6 +65,11 @@ function loadStateFromStorage() {
     if (savedStudentInfo) {
         state.studentInfo = JSON.parse(savedStudentInfo);
     }
+
+    const savedLibrary = localStorage.getItem(STORAGE_KEYS.ASSIGNMENT_LIBRARY);
+    if (savedLibrary) {
+        state.assignmentLibrary = JSON.parse(savedLibrary);
+    }
 }
 
 function saveStateToStorage() {
@@ -74,6 +81,7 @@ function saveStateToStorage() {
     localStorage.setItem(STORAGE_KEYS.RESULTS, JSON.stringify(state.results));
     localStorage.setItem(STORAGE_KEYS.SHEET_URL, state.sheetUrl);
     localStorage.setItem(STORAGE_KEYS.STUDENT_INFO, JSON.stringify(state.studentInfo));
+    localStorage.setItem(STORAGE_KEYS.ASSIGNMENT_LIBRARY, JSON.stringify(state.assignmentLibrary));
 }
 
 // --- Toast / Notification System ---
@@ -756,6 +764,116 @@ function updateRubricSummary() {
     } else {
         warningMsg.style.display = 'none';
     }
+}
+
+// --- 과제 보관함 (Assignment Library) ---
+// 설계한 과제(지문·논제·루브릭)를 이 브라우저에 저장해두고 다시 불러올 수 있습니다.
+function renderAssignmentLibrary() {
+    const select = document.getElementById('assignment-library-select');
+    if (!select) return;
+
+    if (!state.assignmentLibrary || state.assignmentLibrary.length === 0) {
+        select.innerHTML = '<option value="">저장된 과제가 없습니다</option>';
+        return;
+    }
+
+    select.innerHTML = '';
+    // 최신 저장이 위로 오도록 역순 표시
+    state.assignmentLibrary.slice().reverse().forEach(item => {
+        const opt = document.createElement('option');
+        opt.value = item.id;
+        const title = (item.assignment && item.assignment.title) ? item.assignment.title : '(제목 없음)';
+        opt.textContent = `${item.savedAt} · ${title.slice(0, 20)}`;
+        select.appendChild(opt);
+    });
+}
+
+function setupAssignmentLibraryHandlers() {
+    const select = document.getElementById('assignment-library-select');
+    if (!select) return;
+
+    const btnSave = document.getElementById('btn-save-assignment');
+    const btnLoad = document.getElementById('btn-load-assignment');
+    const btnDelete = document.getElementById('btn-delete-assignment');
+    const btnNew = document.getElementById('btn-new-assignment');
+
+    const titleInput = document.getElementById('assignment-title');
+    const passageInput = document.getElementById('assignment-passage');
+    const topicInput = document.getElementById('assignment-topic');
+    const minCharInput = document.getElementById('min-char-count');
+    const maxCharInput = document.getElementById('max-char-count');
+
+    const shortStamp = () => {
+        const d = new Date();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mi = String(d.getMinutes()).padStart(2, '0');
+        return `${mm}/${dd} ${hh}:${mi}`;
+    };
+
+    const applyAssignmentToUI = () => {
+        if (titleInput) titleInput.value = state.assignment.title || '';
+        if (passageInput) passageInput.value = state.assignment.passage || '';
+        if (topicInput) topicInput.value = state.assignment.topic || '';
+        if (minCharInput) minCharInput.value = (state.assignment.minChar !== undefined ? state.assignment.minChar : 400);
+        if (maxCharInput) maxCharInput.value = (state.assignment.maxChar !== undefined ? state.assignment.maxChar : 800);
+        renderRubricList();
+    };
+
+    renderAssignmentLibrary();
+
+    // 현재 과제 저장
+    if (btnSave) btnSave.addEventListener('click', () => {
+        if (!state.assignment.title && !state.assignment.topic) {
+            showToast('저장할 과제 제목이나 논제를 먼저 입력해 주세요.', 'error');
+            return;
+        }
+        state.assignmentLibrary.push({
+            id: 'asg-' + Date.now(),
+            savedAt: shortStamp(),
+            assignment: JSON.parse(JSON.stringify(state.assignment)),
+            rubrics: JSON.parse(JSON.stringify(state.rubrics))
+        });
+        saveStateToStorage();
+        renderAssignmentLibrary();
+        showToast('현재 과제가 보관함에 저장되었습니다.', 'success');
+    });
+
+    // 선택한 과제 불러오기
+    if (btnLoad) btnLoad.addEventListener('click', () => {
+        const id = select.value;
+        if (!id) { showToast('불러올 과제를 목록에서 선택해 주세요.', 'error'); return; }
+        const entry = state.assignmentLibrary.find(a => a.id === id);
+        if (!entry) { showToast('선택한 과제를 찾을 수 없습니다.', 'error'); return; }
+
+        state.assignment = JSON.parse(JSON.stringify(entry.assignment));
+        state.rubrics = JSON.parse(JSON.stringify(entry.rubrics || []));
+        saveStateToStorage();
+        applyAssignmentToUI();
+        showToast('선택한 과제를 불러왔습니다. 필요하면 수정 후 공유 링크를 다시 만들어 주세요.', 'success');
+    });
+
+    // 선택한 과제 삭제
+    if (btnDelete) btnDelete.addEventListener('click', () => {
+        const id = select.value;
+        if (!id) { showToast('삭제할 과제를 목록에서 선택해 주세요.', 'error'); return; }
+        if (!confirm('선택한 과제를 보관함에서 삭제할까요? (학생 제출 기록에는 영향 없습니다)')) return;
+        state.assignmentLibrary = state.assignmentLibrary.filter(a => a.id !== id);
+        saveStateToStorage();
+        renderAssignmentLibrary();
+        showToast('보관함에서 삭제되었습니다.', 'info');
+    });
+
+    // 새 과제 시작 (입력값 비우기)
+    if (btnNew) btnNew.addEventListener('click', () => {
+        if (!confirm('현재 입력한 과제 내용을 비우고 새 과제를 시작할까요? (저장하지 않은 내용은 사라집니다)')) return;
+        state.assignment = { title: '', passage: '', topic: '', minChar: 400, maxChar: 800 };
+        state.rubrics = [];
+        saveStateToStorage();
+        applyAssignmentToUI();
+        showToast('새 과제를 시작합니다. 지문과 논제를 입력해 주세요.', 'info');
+    });
 }
 
 // --- Student View Logic ---
@@ -1640,6 +1758,7 @@ function loadSubmissionsFromGoogleSheets() {
             // 최신 제출이 맨 위로 오도록 역순 배치
             state.submissions = data.reverse();
             updateClassFilterOptions();
+            updateAssignmentFilterOptions();
             renderSubmissionsList();
             showToast('제출 현황이 최신 정보로 갱신되었습니다.', 'success');
         } else if (data && data.error) {
@@ -1685,20 +1804,45 @@ function updateClassFilterOptions() {
     });
 }
 
+// 제출 명단 과제명(주제) 필터 구성
+function updateAssignmentFilterOptions() {
+    const filterSelect = document.getElementById('filter-assignment');
+    if (!filterSelect) return;
+
+    const titles = new Set();
+    state.submissions.forEach(sub => {
+        if (sub.과제명 !== undefined && sub.과제명 !== null && String(sub.과제명).trim() !== '') {
+            titles.add(String(sub.과제명).trim());
+        }
+    });
+
+    const sortedTitles = Array.from(titles).sort();
+    filterSelect.innerHTML = '<option value="">전체 과제</option>';
+    sortedTitles.forEach(t => {
+        const option = document.createElement('option');
+        option.value = t;
+        option.textContent = t.length > 24 ? t.slice(0, 24) + '…' : t;
+        filterSelect.appendChild(option);
+    });
+}
+
 // 제출 명단 테이블 렌더링
 function renderSubmissionsList() {
     const listBody = document.getElementById('submissions-list-body');
     if (!listBody) return;
-    
+
     const classFilter = document.getElementById('filter-class').value;
     const searchFilter = document.getElementById('search-student').value.trim().toLowerCase();
-    
+    const assignmentFilterEl = document.getElementById('filter-assignment');
+    const assignmentFilter = assignmentFilterEl ? assignmentFilterEl.value : '';
+
     listBody.innerHTML = '';
-    
+
     const filteredSubmissions = state.submissions.filter(sub => {
-        const matchClass = !classFilter || (sub.반 && sub.반.trim() === classFilter);
-        const matchSearch = !searchFilter || (sub.이름 && sub.이름.toLowerCase().includes(searchFilter));
-        return matchClass && matchSearch;
+        const matchClass = !classFilter || (sub.반 && String(sub.반).trim() === classFilter);
+        const matchSearch = !searchFilter || (sub.이름 && String(sub.이름).toLowerCase().includes(searchFilter));
+        const matchAssignment = !assignmentFilter || (sub.과제명 && String(sub.과제명).trim() === assignmentFilter);
+        return matchClass && matchSearch && matchAssignment;
     });
     
     if (filteredSubmissions.length === 0) {
@@ -2099,6 +2243,7 @@ function downloadResultAsWord(result) {
 function setupSubmissionsDashboardHandlers() {
     const btnRefresh = document.getElementById('btn-refresh-submissions');
     const filterClass = document.getElementById('filter-class');
+    const filterAssignment = document.getElementById('filter-assignment');
     const searchStudent = document.getElementById('search-student');
     const btnSaveSheet = document.getElementById('btn-save-sheet-url');
     const sheetInput = document.getElementById('sheet-url-input');
@@ -2142,7 +2287,14 @@ function setupSubmissionsDashboardHandlers() {
             renderSubmissionsList();
         });
     }
-    
+
+    // 과제명(주제) 필터
+    if (filterAssignment) {
+        filterAssignment.addEventListener('change', () => {
+            renderSubmissionsList();
+        });
+    }
+
     // 이름 검색 필터
     if (searchStudent) {
         searchStudent.addEventListener('input', () => {
@@ -2184,4 +2336,5 @@ document.addEventListener('DOMContentLoaded', () => {
     setupShareLinkHandlers(); // 공유 링크 생성 핸들러 연동
     setupSubmissionsDashboardHandlers(); // 구글 대시보드 핸들러 연동
     setupTeacherGotoDropdown(); // 교사 모드 상단 '학생 화면 바로가기' 드롭다운 연동
+    setupAssignmentLibraryHandlers(); // 교사 모드 과제 보관함 연동
 });

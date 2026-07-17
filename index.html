@@ -279,6 +279,31 @@ function doPost(e) {
                 </div>
 
                 <div class="panel-body grid-2" style="height: auto; overflow-y: visible; align-content: start;">
+                    <!-- 과제 보관함 -->
+                    <div class="card" style="grid-column: span 2;">
+                        <div class="card-header">
+                            <i data-lucide="folder" class="card-icon indigo"></i>
+                            <h3>과제 보관함</h3>
+                        </div>
+                        <div class="card-body">
+                            <p class="description">
+                                설계한 과제(지문·논제·루브릭)를 저장해두고 나중에 다시 불러올 수 있습니다.
+                                새 과제를 만들 때는 <strong>현재 과제 저장</strong> 후 <strong>새 과제 시작</strong>을 눌러 시작하세요.
+                                (저장 내역은 이 브라우저에 보관됩니다.)
+                            </p>
+                            <div class="assignment-library-bar">
+                                <select id="assignment-library-select" class="form-select" style="flex: 1 1 220px; min-width: 180px;">
+                                    <option value="">저장된 과제가 없습니다</option>
+                                </select>
+                                <button id="btn-load-assignment" class="btn btn-secondary btn-sm"><i data-lucide="folder-open"></i> 불러오기</button>
+                                <button id="btn-delete-assignment" class="btn btn-secondary btn-sm"><i data-lucide="trash"></i> 삭제</button>
+                                <span class="library-bar-spacer"></span>
+                                <button id="btn-save-assignment" class="btn btn-primary btn-sm"><i data-lucide="save"></i> 현재 과제 저장</button>
+                                <button id="btn-new-assignment" class="btn btn-secondary btn-sm"><i data-lucide="file-plus"></i> 새 과제 시작</button>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Left: 지문 및 주제 설정 -->
                     <div class="card">
                         <div class="card-header">
@@ -653,7 +678,10 @@ function doPost(e) {
                                 <i data-lucide="list" class="card-icon indigo"></i>
                                 <h3>제출자 명단</h3>
                             </div>
-                            <div style="display: flex; gap: 8px;">
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;">
+                                <select id="filter-assignment" class="form-select" title="과제(주제)별로 모아 보기" style="padding: 4px 8px; font-size: 0.85rem; border-radius: 4px; border: 1px solid var(--border-color); background-color: #fff; max-width: 200px;">
+                                    <option value="">전체 과제</option>
+                                </select>
                                 <select id="filter-class" class="form-select" style="padding: 4px 8px; font-size: 0.85rem; border-radius: 4px; border: 1px solid var(--border-color); background-color: #fff; width: 100px;">
                                     <option value="">전체 반</option>
                                 </select>
