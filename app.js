@@ -13,6 +13,8 @@ let state = {
     results: [],  // Array of evaluation results
     currentResultId: null, // ID of the currently viewed result
     sheetUrl: '', // Google Spreadsheet Web App URL
+    proxyUrl: '', // Cloudflare Worker AI 프록시 URL (설정 시 API Key 없이 프록시로 호출)
+    proxyToken: '', // 프록시 접근 토큰
     studentInfo: {
         grade: '',
         class: '',
@@ -34,7 +36,9 @@ const STORAGE_KEYS = {
     RESULTS: 'kwa_results',
     SHEET_URL: 'kwa_sheet_url',
     STUDENT_INFO: 'kwa_student_info',
-    ASSIGNMENT_LIBRARY: 'kwa_assignment_library'
+    ASSIGNMENT_LIBRARY: 'kwa_assignment_library',
+    PROXY_URL: 'kwa_proxy_url',
+    PROXY_TOKEN: 'kwa_proxy_token'
 };
 
 function loadStateFromStorage() {
@@ -42,6 +46,8 @@ function loadStateFromStorage() {
     state.selectedModel = localStorage.getItem(STORAGE_KEYS.SELECTED_MODEL) || 'gemini-2.5-flash';
     state.teacherPassword = localStorage.getItem(STORAGE_KEYS.TEACHER_PASSWORD) || '1234';
     state.sheetUrl = localStorage.getItem(STORAGE_KEYS.SHEET_URL) || '';
+    state.proxyUrl = localStorage.getItem(STORAGE_KEYS.PROXY_URL) || '';
+    state.proxyToken = localStorage.getItem(STORAGE_KEYS.PROXY_TOKEN) || '';
     
     const savedAssignment = localStorage.getItem(STORAGE_KEYS.ASSIGNMENT);
     if (savedAssignment) {
@@ -82,6 +88,8 @@ function saveStateToStorage() {
     localStorage.setItem(STORAGE_KEYS.SHEET_URL, state.sheetUrl);
     localStorage.setItem(STORAGE_KEYS.STUDENT_INFO, JSON.stringify(state.studentInfo));
     localStorage.setItem(STORAGE_KEYS.ASSIGNMENT_LIBRARY, JSON.stringify(state.assignmentLibrary));
+    localStorage.setItem(STORAGE_KEYS.PROXY_URL, state.proxyUrl);
+    localStorage.setItem(STORAGE_KEYS.PROXY_TOKEN, state.proxyToken);
 }
 
 // --- Toast / Notification System ---
@@ -197,11 +205,55 @@ function isModelUnavailableError(status, message) {
            m.includes('unsupported') || m.includes('call listmodels');
 }
 
+// AI 사용 가능 여부 — 프록시가 설정돼 있으면 API Key가 없어도 사용 가능
+function hasAiAccess() {
+    return !!(state.proxyUrl || state.apiKey);
+}
+
+// AI 호출 진입점 — 프록시가 설정되어 있으면 프록시 경유, 아니면 브라우저에서 직접 호출
 async function callGemini(prompt, useJson = true) {
-    if (!state.apiKey) {
-        throw new Error('API Key가 등록되지 않았습니다. [설정 & API] 탭에서 등록해 주세요.');
+    if (!hasAiAccess()) {
+        throw new Error('AI 연결이 설정되지 않았습니다. [설정 & API] 탭에서 API Key 또는 AI 프록시를 등록해 주세요.');
     }
 
+    const textResult = state.proxyUrl
+        ? await callGeminiViaProxy(prompt)
+        : await callGeminiDirect(prompt);
+
+    if (!textResult) {
+        throw new Error('API가 빈 결과를 반환했습니다.');
+    }
+
+    if (useJson) {
+        return parseCleanJson(textResult);
+    }
+    return textResult;
+}
+
+// 프록시(Cloudflare Worker) 경유 호출 — API Key가 브라우저에 존재하지 않아 학생에게 노출되지 않습니다.
+async function callGeminiViaProxy(prompt) {
+    let response;
+    try {
+        response = await fetch(state.proxyUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt: prompt, token: state.proxyToken || '' })
+        });
+    } catch (e) {
+        throw new Error('AI 프록시에 연결하지 못했습니다. 프록시 주소를 확인해 주세요.');
+    }
+
+    let data = {};
+    try { data = await response.json(); } catch (e) {}
+
+    if (!response.ok || data.error) {
+        throw new Error(data.error || `AI 프록시 오류 (코드: ${response.status})`);
+    }
+    return data.text || '';
+}
+
+// 브라우저에서 Google API를 직접 호출 (API Key 방식)
+async function callGeminiDirect(prompt) {
     let model = state.selectedModel || 'gemini-2.5-flash';
 
     // 1차 시도
@@ -235,16 +287,7 @@ async function callGemini(prompt, useJson = true) {
     }
 
     const data = await response.json();
-    const textResult = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (!textResult) {
-        throw new Error('API가 빈 결과를 반환했습니다.');
-    }
-
-    if (useJson) {
-        return parseCleanJson(textResult);
-    }
-    return textResult;
+    return data.candidates?.[0]?.content?.parts?.[0]?.text;
 }
 
 // --- 사용 가능한 Gemini 모델 자동 탐색 ---
@@ -378,12 +421,15 @@ function updateApiStatusIndicator() {
     const dot = indicator.querySelector('.status-dot');
     const text = indicator.querySelector('.status-text');
     
-    if (state.apiKey) {
+    if (state.proxyUrl) {
+        dot.className = 'status-dot green';
+        text.textContent = 'AI 프록시 연결됨';
+    } else if (state.apiKey) {
         dot.className = 'status-dot green';
         text.textContent = 'Gemini API 연결됨';
     } else {
         dot.className = 'status-dot red';
-        text.textContent = 'Gemini API 미연결';
+        text.textContent = 'AI 미연결';
     }
 }
 
@@ -516,8 +562,8 @@ function setupTeacherViewHandlers() {
             return;
         }
 
-        if (!state.apiKey) {
-            showToast('API Key가 필요합니다. [설정 & API] 탭을 확인하세요.', 'error');
+        if (!hasAiAccess()) {
+            showToast('AI 연결이 필요합니다. [설정 & API] 탭에서 API Key 또는 AI 프록시를 등록하세요.', 'error');
             return;
         }
 
@@ -600,8 +646,8 @@ JSON Schema 형식:
             return;
         }
         
-        if (!state.apiKey) {
-            showToast('API Key가 필요합니다. [설정 & API] 탭을 확인하세요.', 'error');
+        if (!hasAiAccess()) {
+            showToast('AI 연결이 필요합니다. [설정 & API] 탭에서 API Key 또는 AI 프록시를 등록하세요.', 'error');
             return;
         }
         
@@ -996,8 +1042,8 @@ function setupStudentViewHandlers() {
             return;
         }
         
-        if (!state.apiKey) {
-            showToast('Gemini API Key가 필요합니다. [설정 & API] 탭을 확인하세요.', 'error');
+        if (!hasAiAccess()) {
+            showToast('AI 연결이 필요합니다. 선생님께 문의해 주세요. (설정 & API 탭에서 등록 가능)', 'error');
             return;
         }
 
@@ -1527,6 +1573,59 @@ function setupTeacherPasswordHandlers() {
     });
 }
 
+// --- AI 프록시(Cloudflare Worker) 설정 핸들러 ---
+// 프록시를 등록하면 API Key가 브라우저에 저장되지 않고, 모든 AI 호출이 프록시를 거칩니다.
+function setupProxyHandlers() {
+    const urlInput = document.getElementById('proxy-url-input');
+    const tokenInput = document.getElementById('proxy-token-input');
+    const btnSave = document.getElementById('btn-save-proxy');
+    const btnClear = document.getElementById('btn-clear-proxy');
+    const btnCopyWorker = document.getElementById('btn-copy-worker-code');
+
+    if (urlInput) urlInput.value = state.proxyUrl || '';
+    if (tokenInput) tokenInput.value = state.proxyToken || '';
+
+    if (btnSave && urlInput) {
+        btnSave.addEventListener('click', () => {
+            const url = urlInput.value.trim();
+            if (url && !/^https:\/\//i.test(url)) {
+                showToast('프록시 주소는 https:// 로 시작해야 합니다.', 'error');
+                return;
+            }
+            state.proxyUrl = url;
+            state.proxyToken = tokenInput ? tokenInput.value.trim() : '';
+            saveStateToStorage();
+            updateApiStatusIndicator();
+            showToast(url
+                ? 'AI 프록시가 연결되었습니다. 이제 API Key 없이 채점됩니다.'
+                : 'AI 프록시 설정이 비워졌습니다.', 'success');
+        });
+    }
+
+    if (btnClear) {
+        btnClear.addEventListener('click', () => {
+            if (!confirm('AI 프록시 설정을 해제할까요? (다시 API Key 방식으로 동작합니다)')) return;
+            state.proxyUrl = '';
+            state.proxyToken = '';
+            saveStateToStorage();
+            if (urlInput) urlInput.value = '';
+            if (tokenInput) tokenInput.value = '';
+            updateApiStatusIndicator();
+            showToast('AI 프록시 설정이 해제되었습니다.', 'info');
+        });
+    }
+
+    if (btnCopyWorker) {
+        btnCopyWorker.addEventListener('click', () => {
+            const box = document.getElementById('worker-code-box');
+            if (!box) return;
+            navigator.clipboard.writeText(box.value)
+                .then(() => showToast('Worker 코드가 클립보드에 복사되었습니다!', 'success'))
+                .catch(() => showToast('코드 복사에 실패했습니다.', 'error'));
+        });
+    }
+}
+
 // --- UTF-8 Safe Base64 Encoding & Decoding Helpers ---
 function utf8ToBase64(str) {
     return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (match, p1) => {
@@ -1565,6 +1664,14 @@ function checkAndLoadSharedData() {
                 if (sharedState.selectedModel) {
                     state.selectedModel = sharedState.selectedModel;
                     localStorage.setItem(STORAGE_KEYS.SELECTED_MODEL, state.selectedModel);
+                }
+
+                // AI 프록시 정보 (설정된 경우 학생은 API Key 없이 프록시로 채점)
+                if (sharedState.proxyUrl) {
+                    state.proxyUrl = sharedState.proxyUrl;
+                    state.proxyToken = sharedState.proxyToken || '';
+                    localStorage.setItem(STORAGE_KEYS.PROXY_URL, state.proxyUrl);
+                    localStorage.setItem(STORAGE_KEYS.PROXY_TOKEN, state.proxyToken);
                 }
                 
                 state.assignment = sharedState.assignment;
@@ -1616,7 +1723,18 @@ function setupShareLinkHandlers() {
     const apiWarning = document.getElementById('share-api-warning');
     
     if (!btnGen || !btnCopy || !linkInput) return;
-    
+
+    // AI 프록시가 설정된 경우: API Key 포함 옵션이 필요 없으므로 안내 문구로 대체
+    if (state.proxyUrl) {
+        const keyLabel = checkApiKey ? checkApiKey.closest('label') : null;
+        if (keyLabel) keyLabel.style.display = 'none';
+        if (apiWarning) {
+            apiWarning.style.display = 'flex';
+            apiWarning.style.color = '#047857';
+            apiWarning.textContent = '🔒 AI 프록시가 설정되어 있어, API Key 없이 안전하게 공유됩니다.';
+        }
+    }
+
     // Toggle warning message based on checkbox
     checkApiKey.addEventListener('change', () => {
         if (checkApiKey.checked) {
@@ -1641,7 +1759,12 @@ function setupShareLinkHandlers() {
             selectedModel: state.selectedModel // 교사가 검증한 작동 모델을 학생에게 전달
         };
         
-        if (checkApiKey.checked) {
+        if (state.proxyUrl) {
+            // AI 프록시가 설정된 경우: API Key 대신 프록시 주소만 전달 → 키가 학생에게 노출되지 않음
+            sharedState.proxyUrl = state.proxyUrl;
+            sharedState.proxyToken = state.proxyToken;
+            sharedState.includeApiKey = false;
+        } else if (checkApiKey.checked) {
             if (!state.apiKey) {
                 showToast('포함할 API Key가 등록되어 있지 않습니다. 설정 & API 탭에서 등록해 주세요.', 'error');
                 return;
@@ -2413,4 +2536,5 @@ document.addEventListener('DOMContentLoaded', () => {
     setupSubmissionsDashboardHandlers(); // 구글 대시보드 핸들러 연동
     setupTeacherGotoDropdown(); // 교사 모드 상단 '학생 화면 바로가기' 드롭다운 연동
     setupAssignmentLibraryHandlers(); // 교사 모드 과제 보관함 연동
+    setupProxyHandlers(); // AI 프록시(Cloudflare Worker) 설정 연동
 });

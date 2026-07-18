@@ -128,6 +128,130 @@
                         </div>
                     </div>
 
+                    <!-- AI Proxy Card -->
+                    <div class="card" style="grid-column: span 2;">
+                        <div class="card-header">
+                            <i data-lucide="shield-check" class="card-icon indigo"></i>
+                            <h3>AI 프록시 연결 (권장 · 선택)</h3>
+                        </div>
+                        <div class="card-body">
+                            <p class="description">
+                                프록시를 연결하면 <strong>API Key가 학생에게 전혀 전달되지 않습니다.</strong>
+                                지금 방식(키를 공유 링크에 담아 전달)은 키가 노출될 수 있고 사용량이 소진될 위험이 있는데,
+                                Cloudflare Worker에 키를 숨겨두면 그 위험이 사라집니다.
+                            </p>
+
+                            <div class="form-group inline-group" style="margin-top: 4px;">
+                                <div>
+                                    <label for="proxy-url-input">프록시 주소 (Worker URL)</label>
+                                    <input type="text" id="proxy-url-input" placeholder="https://이름.계정.workers.dev">
+                                </div>
+                                <div>
+                                    <label for="proxy-token-input">접근 토큰 (ACCESS_TOKEN)</label>
+                                    <input type="text" id="proxy-token-input" placeholder="예: barungeul-2026-1">
+                                </div>
+                            </div>
+
+                            <div class="action-row" style="margin-bottom: 16px;">
+                                <button id="btn-save-proxy" class="btn btn-primary">
+                                    <i data-lucide="save"></i> 프록시 연결 저장
+                                </button>
+                                <button id="btn-clear-proxy" class="btn btn-secondary">
+                                    <i data-lucide="x"></i> 연결 해제
+                                </button>
+                            </div>
+
+                            <details class="guide-details" style="border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 12px; background-color: var(--bg-hover, #f8fafc);">
+                                <summary style="cursor: pointer; font-weight: 600; font-size: 0.9rem; color: var(--color-indigo); list-style: none; display: flex; align-items: center; gap: 4px;">
+                                    <span>🛡️ Cloudflare Worker 만드는 방법 보기 (클릭)</span>
+                                </summary>
+                                <div style="margin-top: 10px; font-size: 0.85rem; line-height: 1.6; color: var(--text-secondary);">
+                                    <ol style="padding-left: 20px; margin-bottom: 12px;">
+                                        <li><strong>dash.cloudflare.com</strong> 로그인 → <strong>Workers &amp; Pages</strong> → <strong>Create</strong> → <strong>Workers</strong> → 이름 입력 후 <strong>Deploy</strong></li>
+                                        <li style="margin-top: 6px;"><strong>Edit code</strong> 를 눌러 편집기를 열고, 기존 코드를 모두 지운 뒤 <strong>아래 코드</strong>를 붙여넣고 <strong>Deploy</strong></li>
+                                        <li style="margin-top: 6px;">Worker의 <strong>Settings → Variables and Secrets</strong> 에서 다음 두 개를 <strong>Secret</strong> 으로 추가:
+                                            <br><code>GEMINI_API_KEY</code> = 발급받은 Gemini 키 &nbsp;/&nbsp; <code>ACCESS_TOKEN</code> = 원하는 문자열(예: barungeul-2026-1)</li>
+                                        <li style="margin-top: 6px;">코드 맨 위 <code>ALLOWED_ORIGIN</code> 이 이 앱 주소와 같은지 확인 (다르면 수정 후 다시 Deploy)</li>
+                                        <li style="margin-top: 6px;">Worker 주소와 토큰을 <strong>위 칸에 입력하고 저장</strong> → 끝!</li>
+                                    </ol>
+
+                                    <div class="code-copy-container" style="position: relative; margin-bottom: 12px;">
+                                        <textarea id="worker-code-box" readonly style="width: 100%; height: 200px; font-family: monospace; font-size: 0.75rem; padding: 8px; border-radius: 4px; border: 1px solid #cbd5e1; resize: none; background: #fafafa; color: #333;">
+// 바른글 AI — Gemini 프록시 (Cloudflare Worker)
+// Secrets: GEMINI_API_KEY(필수), ACCESS_TOKEN(권장)
+const ALLOWED_ORIGIN = 'https://yerang-k.github.io';
+const DEFAULT_MODEL = 'gemini-2.5-flash';
+const MAX_PROMPT_CHARS = 20000;
+
+export default {
+  async fetch(request, env) {
+    const cors = {
+      'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type'
+    };
+
+    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+    if (request.method !== 'POST') return json({ error: 'POST만 허용됩니다.' }, 405, cors);
+
+    const origin = request.headers.get('Origin') || '';
+    if (origin && origin !== ALLOWED_ORIGIN) {
+      return json({ error: '허용되지 않은 접근입니다.' }, 403, cors);
+    }
+
+    let body;
+    try { body = await request.json(); }
+    catch (e) { return json({ error: '잘못된 요청입니다.' }, 400, cors); }
+
+    if (env.ACCESS_TOKEN && body.token !== env.ACCESS_TOKEN) {
+      return json({ error: '접근 토큰이 올바르지 않습니다.' }, 403, cors);
+    }
+
+    const prompt = typeof body.prompt === 'string' ? body.prompt : '';
+    if (!prompt) return json({ error: '요청 내용이 비어 있습니다.' }, 400, cors);
+    if (prompt.length > MAX_PROMPT_CHARS) return json({ error: '요청이 너무 깁니다.' }, 413, cors);
+
+    const model = body.model || DEFAULT_MODEL;
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models/'
+      + model + ':generateContent?key=' + env.GEMINI_API_KEY;
+
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+    });
+
+    const data = await r.json();
+    if (!r.ok) {
+      return json({ error: (data.error && data.error.message) || 'AI 호출에 실패했습니다.' }, r.status, cors);
+    }
+
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    return json({ text: text }, 200, cors);
+  }
+};
+
+function json(obj, status, cors) {
+  return new Response(JSON.stringify(obj), {
+    status: status,
+    headers: Object.assign({ 'Content-Type': 'application/json' }, cors)
+  });
+}</textarea>
+                                        <button id="btn-copy-worker-code" class="btn btn-secondary btn-sm" style="position: absolute; right: 8px; top: 8px; padding: 4px 8px; font-size: 0.75rem;">
+                                            코드 복사
+                                        </button>
+                                    </div>
+
+                                    <div class="guide-note warn">
+                                        ⚠️ 프록시를 쓰기 시작하면 Google Cloud에서 그 키의 <strong>HTTP 리퍼러 제한은 반드시 '없음'으로</strong> 바꿔야 합니다.
+                                        (서버에서 호출하므로 리퍼러가 없어 차단됩니다.) <strong>API 제한(Generative Language API만)은 그대로 유지</strong>하세요.
+                                        이미 학생에게 나간 키가 있다면 <strong>재발급</strong> 후 Worker에 넣는 것을 권장합니다.
+                                    </div>
+                                </div>
+                            </details>
+                        </div>
+                    </div>
+
                     <!-- Google Spreadsheet Card -->
                     <div class="card" style="grid-column: span 2;">
                         <div class="card-header">
