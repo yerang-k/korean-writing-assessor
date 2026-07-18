@@ -1072,7 +1072,9 @@ function respond(obj, e) {
                                 <li><strong>구글 시트 연동 (선택)</strong> — 학생별 기록을 계속 쌓으려면 연동하세요. 같은 탭의 <em>'연동 방법 보기'</em> 안내를 그대로 따라 하면 됩니다.</li>
                             </ul>
                             <div class="guide-note">
-                                API Key는 외부로 전송되지 않고 <strong>선생님 브라우저에만</strong> 저장됩니다.
+                                API Key는 외부로 전송되지 않고 <strong>선생님 브라우저에만</strong> 저장됩니다.<br>
+                                🔒 다만 <strong>학생에게 링크를 배포</strong>하실 예정이라면, 아래
+                                <strong>'보안 강화 — AI 프록시'</strong> 항목을 함께 보세요. 키가 학생에게 노출되지 않게 할 수 있습니다.
                             </div>
                         </div>
                     </div>
@@ -1161,6 +1163,73 @@ function respond(obj, e) {
                             </ul>
                             <div class="guide-note">
                                 이미 낸 과제의 학생 기록은 <strong>그대로 보존</strong>됩니다. 새 과제를 만들어도 사라지지 않습니다.
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 보안 강화: AI 프록시 -->
+                    <div class="card" style="grid-column: span 2;">
+                        <div class="card-header">
+                            <i data-lucide="shield-check" class="card-icon indigo"></i>
+                            <h3>🔒 보안 강화 — AI 프록시 (학생 배포 시 권장)</h3>
+                        </div>
+                        <div class="card-body">
+                            <p class="description" style="margin-bottom: 12px;">
+                                공유 링크에 <strong>API Key를 포함</strong>하면, 링크를 받은 사람이 키를 꺼내 쓸 수 있고
+                                사용량이 소진될 위험이 있습니다. <strong>AI 프록시</strong>를 쓰면 키가
+                                <strong>Cloudflare Worker(서버) 안에만</strong> 있고 학생에게는 전달되지 않습니다.
+                            </p>
+
+                            <div class="guide-tip" style="margin-top: 0; margin-bottom: 14px;">
+                                💡 프록시를 쓰면 학생 링크에는 <strong>프록시 주소와 접근 토큰</strong>만 담깁니다.
+                                토큰이 새어나가도 <strong>토큰만 바꾸면</strong> 되므로 API Key를 재발급할 필요가 없습니다.
+                            </div>
+
+                            <h4 style="font-size: 0.95rem; font-weight: 700; margin-bottom: 8px;">설치 순서</h4>
+                            <ol class="guide-list" style="margin-bottom: 14px;">
+                                <li><strong>API Key 발급</strong> — Google AI Studio(<code>aistudio.google.com/apikey</code>)에서
+                                    <em>API 키 만들기</em>. 이때 <strong>이미 쓰고 있던 기존 프로젝트를 선택</strong>하세요.
+                                    키를 만들 때 <strong>애플리케이션 제한사항은 '없음'</strong> 으로 둡니다.</li>
+                                <li><strong>Worker 만들기</strong> — <code>dash.cloudflare.com</code> → Workers &amp; Pages →
+                                    Create → Workers → 이름 입력 후 Deploy. 생성된 <strong>주소(…workers.dev)를 메모</strong>합니다.</li>
+                                <li><strong>코드 붙여넣기</strong> — 이 앱 <strong>[설정 & API] → AI 프록시 연결 → 'Worker 만드는 방법 보기'</strong> 에서
+                                    <em>코드 복사</em> → Worker의 <em>Edit code</em> 에서 기존 코드를 모두 지우고 붙여넣기 → Deploy.</li>
+                                <li><strong>비밀값 2개 등록</strong> — Worker의 <em>Settings → Variables and Secrets</em> 에서
+                                    <strong>Secret</strong> 타입으로 추가:<br>
+                                    <code>GEMINI_API_KEY</code> = 발급받은 키 &nbsp;/&nbsp; <code>ACCESS_TOKEN</code> = 직접 정한 암호 문자열</li>
+                                <li><strong>앱에 연결</strong> — [설정 & API] → AI 프록시 연결에 <strong>Worker 주소</strong>와 <strong>토큰</strong>을 입력하고 저장.
+                                    왼쪽 아래가 <strong>'AI 프록시 연결됨'</strong> 으로 바뀌면 성공입니다.</li>
+                                <li><strong>테스트 &amp; 마무리</strong> — [교사 모드]에서 주제 추천을 눌러 작동을 확인한 뒤,
+                                    <strong>공유 링크를 새로 만들어</strong> 배포하고 <strong>예전 키는 삭제</strong>하세요.</li>
+                            </ol>
+
+                            <h4 style="font-size: 0.95rem; font-weight: 700; margin-bottom: 8px;">꼭 주의할 3가지</h4>
+                            <div class="guide-note warn" style="margin-top: 0;">
+                                <strong>①</strong> <strong>새로 만든 프로젝트는 무료 할당량이 0</strong>일 수 있습니다.
+                                <code>limit: 0</code> 오류가 나면 <strong>기존에 쓰던 프로젝트</strong>에서 키를 다시 발급하세요.<br><br>
+                                <strong>②</strong> 키에 <strong>HTTP 리퍼러(웹사이트) 제한을 걸면 프록시가 차단</strong>됩니다.
+                                프록시를 쓸 키는 <strong>애플리케이션 제한사항 = '없음'</strong> 이어야 합니다.
+                                (API 제한 = Gemini API만 은 걸어도 됩니다.)<br><br>
+                                <strong>③</strong> Worker 코드 맨 위 <code>ALLOWED_ORIGIN</code> 이 <strong>이 앱 주소와 같아야</strong> 합니다.
+                                다르면 "허용되지 않은 접근입니다"가 뜹니다.
+                            </div>
+
+                            <h4 style="font-size: 0.95rem; font-weight: 700; margin: 16px 0 8px;">오류가 날 때</h4>
+                            <div class="guide-faq">
+                                <p class="q">"허용되지 않은 접근입니다"</p>
+                                <p class="a">Worker 코드의 <code>ALLOWED_ORIGIN</code> 이 앱 주소와 다릅니다. 수정 후 다시 Deploy.</p>
+
+                                <p class="q">"접근 토큰이 올바르지 않습니다"</p>
+                                <p class="a">앱에 입력한 토큰과 Worker의 <code>ACCESS_TOKEN</code> 값이 다릅니다. 공백·대소문자를 확인하세요.</p>
+
+                                <p class="q">"no longer available to new users"</p>
+                                <p class="a">그 모델을 쓸 수 없다는 뜻입니다. Worker가 사용 가능한 모델을 자동으로 찾으니, <strong>최신 Worker 코드</strong>를 다시 붙여넣고 Deploy 해보세요.</p>
+
+                                <p class="q">"Quota exceeded … limit: 0"</p>
+                                <p class="a">그 프로젝트에 무료 할당량이 없습니다. <strong>기존(무료 등급이 살아있는) 프로젝트</strong>에서 키를 새로 만들어 Worker의 <code>GEMINI_API_KEY</code> 를 교체하세요.</p>
+
+                                <p class="q">토큰이 유출된 것 같아요</p>
+                                <p class="a">Worker의 <code>ACCESS_TOKEN</code> 값만 새로 바꾸고 <strong>공유 링크를 다시 생성</strong>하면 됩니다. API Key는 그대로 두셔도 됩니다.</p>
                             </div>
                         </div>
                     </div>
