@@ -1235,3 +1235,23 @@ textarea {
     border-radius: 4px;
     font-size: 0.8rem;
 }
+
+/* ===== 제작자 표시 ===== */
+.app-credit {
+    margin-top: 10px;
+    text-align: center;
+    font-size: 0.68rem;
+    letter-spacing: 0.02em;
+    color: rgba(203, 213, 225, 0.55);
+}
+
+.guide-credit {
+    text-align: center;
+    font-size: 0.82rem;
+    line-height: 1.7;
+    color: var(--text-secondary);
+    padding: 18px 12px 4px;
+    border-top: 1px solid var(--border-color, #e2e8f0);
+    margin-top: 4px;
+}
+.guide-credit strong { color: #0f172a; }
