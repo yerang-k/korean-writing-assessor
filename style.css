@@ -1134,3 +1134,104 @@ textarea {
     flex: 1 1 12px;
     min-width: 8px;
 }
+
+/* ===== 사용 설명서 탭 ===== */
+.guide-step-num {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background-color: var(--color-indigo, #6366f1);
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.9rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.guide-list {
+    padding-left: 20px;
+    margin: 0;
+    font-size: 0.88rem;
+    line-height: 1.75;
+    color: var(--text-secondary);
+}
+.guide-list li { margin-bottom: 7px; }
+.guide-list li strong { color: #0f172a; }
+.guide-list li em { font-style: normal; color: var(--color-indigo, #6366f1); font-weight: 600; }
+
+.guide-tip,
+.guide-note {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: var(--radius-md, 8px);
+    font-size: 0.83rem;
+    line-height: 1.6;
+}
+.guide-tip {
+    background-color: #eef2ff;
+    border: 1px solid #c7d2fe;
+    color: #3730a3;
+}
+.guide-note {
+    background-color: #f8fafc;
+    border: 1px solid var(--border-color, #e2e8f0);
+    color: var(--text-secondary);
+}
+.guide-note.warn {
+    background-color: #fffbeb;
+    border-color: #fde68a;
+    color: #92400e;
+}
+
+.guide-level-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.guide-level {
+    padding: 8px 14px;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    border: 1px solid transparent;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+}
+.guide-level em {
+    font-style: normal;
+    font-weight: 500;
+    font-size: 0.78rem;
+    opacity: 0.85;
+}
+.guide-level.lv-a { background:#ecfdf5; color:#047857; border-color:#a7f3d0; }
+.guide-level.lv-b { background:#eff6ff; color:#1d4ed8; border-color:#bfdbfe; }
+.guide-level.lv-c { background:#eef2ff; color:#4338ca; border-color:#c7d2fe; }
+.guide-level.lv-d { background:#fff7ed; color:#c2410c; border-color:#fed7aa; }
+.guide-level.lv-e { background:#fef2f2; color:#b91c1c; border-color:#fecaca; }
+
+.guide-faq .q {
+    font-weight: 700;
+    color: #0f172a;
+    font-size: 0.88rem;
+    margin-top: 14px;
+}
+.guide-faq .q:first-child { margin-top: 0; }
+.guide-faq .a {
+    font-size: 0.85rem;
+    line-height: 1.7;
+    color: var(--text-secondary);
+    margin-top: 4px;
+    padding-left: 14px;
+    border-left: 2px solid var(--border-color, #e2e8f0);
+}
+
+#tab-guide code {
+    background: #e2e8f0;
+    color: #0f172a;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+}

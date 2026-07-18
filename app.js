@@ -1422,8 +1422,8 @@ function checkTeacherModeAndSetupSidebar() {
     const urlParams = new URLSearchParams(window.location.search);
     const isTeacherModeUrl = urlParams.get('mode') === 'teacher';
     
-    // 교사 전용 탭 (설정 & 교사모드 설계 & 제출 현황)
-    const teacherNavItems = document.querySelectorAll('.nav-item[data-tab="config"], .nav-item[data-tab="teacher"], #nav-item-submissions');
+    // 교사 전용 탭 (설정 & 교사모드 설계 & 제출 현황 & 사용 설명서)
+    const teacherNavItems = document.querySelectorAll('.nav-item[data-tab="config"], .nav-item[data-tab="teacher"], #nav-item-submissions, #nav-item-guide');
     
     if (!isTeacherModeUrl) {
         // 교사 모드가 아닐 때 (학생 접속) -> 탭 버튼 숨김
@@ -1434,7 +1434,7 @@ function checkTeacherModeAndSetupSidebar() {
         // 현재 active된 탭이 교사용 탭(config 등)이라면 student 탭으로 활성화 탭을 강제 이전
         const activeNavItem = document.querySelector('.nav-item.active');
         const activeTab = activeNavItem ? activeNavItem.getAttribute('data-tab') : '';
-        if (activeTab === 'config' || activeTab === 'teacher' || activeTab === 'submissions') {
+        if (activeTab === 'config' || activeTab === 'teacher' || activeTab === 'submissions' || activeTab === 'guide') {
             const studentNavItem = document.querySelector('.nav-item[data-tab="student"]');
             if (studentNavItem) {
                 const navItems = document.querySelectorAll('.nav-item');
