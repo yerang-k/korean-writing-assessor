@@ -202,7 +202,8 @@ function isModelUnavailableError(status, message) {
     const m = (message || '').toLowerCase();
     return m.includes('not found') || m.includes('not supported') ||
            m.includes('deprecated') || m.includes('is not available') ||
-           m.includes('unsupported') || m.includes('call listmodels');
+           m.includes('no longer available') || m.includes('unsupported') ||
+           m.includes('call listmodels');
 }
 
 // AI 사용 가능 여부 — 프록시가 설정돼 있으면 API Key가 없어도 사용 가능
