@@ -76,9 +76,10 @@ AI가 매긴 총점의 **성취율(획득 점수 ÷ 총 배점)** 로 자동 산
 index.html      실제 앱 화면 (GitHub Pages가 서비스하는 파일)
 app.js          앱 로직 (AI 호출·채점·시트 연동·화면 제어)
 style.css       스타일
+README.md       이 문서
 ```
 
-> `barungeul-ai/`, `korean-writing-assessor/` 폴더는 **예전 버전 보관용**이며 실제 서비스에는 사용되지 않습니다.
+빌드 과정이 없어 위 세 파일이 곧 앱 전체입니다.
 
 ---
 
